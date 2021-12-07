@@ -102,3 +102,11 @@ aarlo/
 delete*
 .vscode
 log_history*
+
+# export trade data
+data/trade/exports_2020.zip
+data/trade/exports_2021.zip
+data/trade/exports_2022.zip
+data/trade/imports_2020.zip
+data/trade/imports_2021.zip
+data/trade/exports_2022.zip

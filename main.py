@@ -24,8 +24,10 @@ is_csv_ready = False
 is_remove_stuff = True
 execute_queries = True
 
-folder_path = "C:/Github/import_export_chile/"
-raw_folder = folder_path + "raw/"
+project_folder_path = "C:/Github/import_export_chile/"
+import_export_raw_data_path = "E:/OneDrive/Projects/trade"
+
+raw_folder = project_folder_path + "raw/"
 
 ### ///// READ ALL EXISTING FILES
 import_files = []
@@ -167,14 +169,14 @@ if not is_csv_ready:
     # csv GENERATION
     print("Saving as .csv....")
     time.sleep(1)
-    imports.to_csv(folder_path + "imports.csv", index=False, sep=";", header=False)
-    exports.to_csv(folder_path + "exports.csv", index=False, sep=";", header=False)
+    imports.to_csv(project_folder_path + "imports.csv", index=False, sep=";", header=False)
+    exports.to_csv(project_folder_path + "exports.csv", index=False, sep=";", header=False)
 
 else:
     try:
         print("Reading .csv....")
-        imports = pd.read_csv(folder_path + " imports.csv", sep=";", header=None)
-        exports = pd.read_csv(folder_path + " exports.csv", sep=";", header=None)
+        imports = pd.read_csv(project_folder_path + " imports.csv", sep=";", header=None)
+        exports = pd.read_csv(project_folder_path + " exports.csv", sep=";", header=None)
 
     except (Exception, psycopg2.DatabaseError) as error:
         print("There is no CSV available. Error: %s" % error)
@@ -258,14 +260,14 @@ except (Exception, psycopg2.DatabaseError) as error:
 #                                    password=db_cred['local']['dbpassword'])
 
 
-def copy_from_file(conn, df, table_name, folder_path):
+def copy_from_file(conn, df, table_name, project_folder_path):
     """
     Here we are going save the dataframe on disk as
     a csv file, load the csv file
     and use copy_from() to copy it to the table
     """
     # Save the dataframe to disk
-    tmp_df = folder_path + df.name + ".csv"
+    tmp_df = project_folder_path + df.name + ".csv"
 
     if not path.exists(df.name + ".csv"):
         print("Saving to csv...")
@@ -288,14 +290,14 @@ start = time.process_time()
 ## Copy dimensions
 print("Copying dimensions....")
 for k, v in dimensions_dict.items():
-    copy_from_file(raw_con, v, k, folder_path)
+    copy_from_file(raw_con, v, k, project_folder_path)
 
 ## Copy imports and exports
 
 print("Copying imports to DB....")
-copy_from_file(raw_con, imports, imports.name, folder_path)
+copy_from_file(raw_con, imports, imports.name, project_folder_path)
 print("Copying exports to DB....")
-copy_from_file(raw_con, exports, exports.name, folder_path)
+copy_from_file(raw_con, exports, exports.name, project_folder_path)
 print("Copy imports and exports to DB complete: " + str((time.process_time() - start)))
 
 
@@ -320,7 +322,7 @@ print("Copy imports and exports to DB complete: " + str((time.process_time() - s
 
 # if is_excel:
 #     print("Saving pandas df to Excel....")
-#     df.to_excel(folder_path + "output.xlsx")
+#     df.to_excel(project_folder_path + "output.xlsx")
 
 if is_remove_stuff:
     try:
@@ -385,7 +387,7 @@ if execute_queries:
     for f in files:
         print("running", f)
         # Parse and execute .sql files
-        queryParsed = parse_sql(folder_path + f)
+        queryParsed = parse_sql(project_folder_path + f)
 
         # Commit Transactions by batch
         with raw_con.cursor() as cur:
