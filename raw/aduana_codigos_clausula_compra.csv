@@ -1,0 +1,14 @@
+clausula_compra_codigo;clausula_compra_nombre
+1;CIF
+11;CPT
+12;CIP
+17;DAT
+18;DAP
+2;CFR
+3;EXW
+4;FAS
+5;FOB
+6;S/CL
+7;FCA
+8;OTRA
+9;DDP

@@ -1,0 +1,1 @@
+powershell -command "& {get-content '%~1' -TotalCount 100|set-content -path '%~dp1%~n1_sample%~x1'}"
