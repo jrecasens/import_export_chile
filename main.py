@@ -1,11 +1,6 @@
 import sys
-if sys.version_info[0] < 3:
-    from StringIO import StringIO
-else:
-    from io import StringIO
+from io import StringIO
 import pandas as pd
-import os
-from pandasql import sqldf
 import re
 import os.path
 from os import path
@@ -14,37 +9,40 @@ import psycopg2
 from collections import defaultdict
 import sqlalchemy
 from zipfile import ZipFile
-import db_utils
 
 ### ///// PARAMETERS
 
-is_sample = False
+is_sample = True
 is_excel = False
 is_csv_ready = False
 is_remove_stuff = True
 execute_queries = True
 
 project_folder_path = "C:/Github/import_export_chile/"
-import_export_raw_data_path = "E:/OneDrive/Projects/trade"
 
-raw_folder = project_folder_path + "raw/"
+columns_folder = project_folder_path + "data/columns/"
+dimensions_folder = project_folder_path + "data/dimensions/"
+trade_folder = project_folder_path + "data/trade/"
 
 ### ///// READ ALL EXISTING FILES
+print("Reading content of folder: " + project_folder_path)
 import_files = []
 export_files = []
 dimension_files = []
-import_headers_file = ["descripcion-y-estructura-de-datos-din.xlsx"]
-export_headers_file = ["descripcion-y-estructura-de-datos-dus.xlsx"]
+headers_files = []
 
-for filename in os.listdir(raw_folder):
-    name = os.path.splitext(filename)[0]
-    extension = os.path.splitext(filename)[1]
-    if extension == ".zip" and name.startswith('import'):
-        import_files.append(str(filename))
-    elif extension == ".zip" and name.startswith('export'):
-        export_files.append(str(filename))
-    elif extension == ".csv" and name.startswith('aduana_codigos'):
-        dimension_files.append(str(filename))
+for folders in [columns_folder, dimensions_folder, trade_folder]:
+    for filename in os.listdir(folders):
+        name = os.path.splitext(filename)[0]
+        extension = os.path.splitext(filename)[1]
+        if extension == ".zip" and name.startswith('import'):
+            import_files.append(str(filename))
+        elif extension == ".zip" and name.startswith('export'):
+            export_files.append(str(filename))
+        elif extension == ".csv" and name.startswith('aduana_codigos'):
+            dimension_files.append(str(filename))
+        elif extension == ".xlsx" and name.startswith('descripcion-y-estructura-de-datos'):
+            headers_files.append(str(filename))
 
 # Remove Samples?
 for item in import_files[:]:
@@ -63,11 +61,11 @@ for item in export_files[:]:
         if "sample" in item:
             export_files.remove(item)
 
+print("Files to use:")
 print(import_files)
 print(export_files)
 print(dimension_files)
-print(import_headers_file)
-print(export_headers_file)
+print(headers_files)
 
 ### ///// LOAD DIMENSIONS
 
@@ -78,7 +76,7 @@ for f in dimension_files:
     name = os.path.splitext(f)[0]
     dimension_list_name.append(name)
     print(f)
-    with open(str(raw_folder + f), 'rt', encoding='utf-8') as fileObject:
+    with open(str(dimensions_folder + f), 'rt', encoding='utf-8') as fileObject:
         temp_txt = StringIO(fileObject.read())
         df_temp = pd.read_csv(temp_txt, sep=";", low_memory=False)
         df_temp.name = name
@@ -92,9 +90,15 @@ print("Appending Complete.")
 
 ### ///// GET HEADERS
 
+for f in headers_files:
+    if "din" in f:
+        import_headers_file = f
+    elif "dus" in f:
+        export_headers_file = f
+
 # Column Names
-import_headers_raw = pd.read_excel(raw_folder + import_headers_file[0], sheet_name=None)
-export_headers_raw = pd.read_excel(raw_folder + export_headers_file[0], sheet_name=None)
+import_headers_raw = pd.read_excel(columns_folder + import_headers_file, sheet_name=None)
+export_headers_raw = pd.read_excel(columns_folder + export_headers_file, sheet_name=None)
 import_export_headers = []
 
 for df in [import_headers_raw, export_headers_raw]:
@@ -107,29 +111,31 @@ for df in [import_headers_raw, export_headers_raw]:
         df_headers[i] = re.sub(regex, '_', df_headers[i])
     import_export_headers.append(df_headers)
 
-print("Got headers:")
-print(import_export_headers)
+print("Got Import headers:")
+print(import_export_headers[0])
+print("Got Export headers:")
+print(import_export_headers[1])
 
 ### ///// UNZIP IMPORT AND EXPORT FILES
 start = time.process_time()
 if not is_csv_ready:
-    print("Extracting files...")
+    print("Extracting files to temporary folder...")
     for z in [import_files, export_files]:
         for f in z:
             # Create a ZipFile Object and load sample.zip in it
-            with ZipFile(raw_folder + f, 'r') as zipObj:
+            with ZipFile(trade_folder + f, 'r') as zipObj:
                # Extract all the contents of zip file in different directory
-               zipObj.extractall(raw_folder + 'temp')
+               zipObj.extractall(trade_folder + 'temp')
 
 print("Zip extraction Done!" + str((time.process_time() - start)))
 # 1.5 years take 9 min
 
-### ///// READ IMPORTS CSVs
+### ///// READ IMPORTS CSVs (from Temp folder)
 start = time.process_time()
 if not is_csv_ready:
 
     all_extracted_files = []
-    for filename in os.listdir(raw_folder + 'temp'):
+    for filename in os.listdir(trade_folder + 'temp'):
         extension = os.path.splitext(filename)[1]
         if extension == ".txt":
            all_extracted_files.append(str(filename))
@@ -151,7 +157,7 @@ if not is_csv_ready:
 
     for f in [import_files_extracted, export_files_extracted]:
         for i in f:
-            f_path = str(raw_folder + 'temp/' + i)
+            f_path = str(trade_folder + 'temp/' + i)
             with open(f_path, 'rt', encoding='utf-8') as fileObject:
                 temp_txt = StringIO(fileObject.read())
                 df_temp = pd.read_csv(temp_txt, sep=";", header=None, low_memory=False)
@@ -234,31 +240,25 @@ try:
     cur = raw_con.cursor()
     for t in [imports.name, exports.name]:
         cur.execute("drop table if exists " + t + " cascade")
+    print("Import and Export DB tables removed.")
     for dim in dimension_list_name:
         cur.execute("drop table if exists " + dim + " cascade")
+    print("Dimension DB tables removed.")
     cur.close()
 except (Exception, psycopg2.DatabaseError) as error:
     print("Error: %s" % error)
 
 
 try:
+    print("Creating empty DB schemas...")
     for df in [imports, exports] + dimension_list_data:
         df_head = df.head(10).copy()
         all_columns = list(df_head)  # Creates list of all column headers
         df_head[all_columns] = df_head[all_columns].astype(str)
         df_head.head(0).to_sql(df.name, con=cnx, index=False)
-
+    print("DB schema created.")
 except (Exception, psycopg2.DatabaseError) as error:
     print("Error: %s" % error)
-
-# cur = raw_con.cursor()
-# out = StringIO()
-
-# con = psycopg2.connect(dbname=db_cred['local']['dbname'],
-#                                    user=db_cred['local']['dbusername'],
-#                                    host=db_cred['local']['dbserverName'],
-#                                    password=db_cred['local']['dbpassword'])
-
 
 def copy_from_file(conn, df, table_name, project_folder_path):
     """
@@ -325,6 +325,7 @@ print("Copy imports and exports to DB complete: " + str((time.process_time() - s
 #     df.to_excel(project_folder_path + "output.xlsx")
 
 if is_remove_stuff:
+    print("Removing import and export files...")
     try:
         for f in ["imports.csv","exports.csv"] + dimension_files:
             os.remove(f)
@@ -332,12 +333,12 @@ if is_remove_stuff:
         print("No output files to delete.")
 
     # checking whether file exists or not
-    if os.path.exists(raw_folder + "temp"):
+    if os.path.exists(trade_folder + "temp"):
         try:
             import stat
-            os.chmod(raw_folder + "temp", stat.S_IWRITE)
+            os.chmod(trade_folder + "temp", stat.S_IWRITE)
             import shutil
-            shutil.rmtree(raw_folder + "temp")
+            shutil.rmtree(trade_folder + "temp")
             # os.unlink(raw_folder + "temp")
             # os.remove(raw_folder + "temp")
         except:
