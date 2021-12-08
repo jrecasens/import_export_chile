@@ -12,7 +12,7 @@ from zipfile import ZipFile
 
 ### ///// PARAMETERS
 
-is_sample = True
+is_sample = False
 is_excel = False
 is_csv_ready = False
 is_remove_stuff = True
@@ -192,10 +192,18 @@ print("csv generation Done!" + str((time.process_time() - start)))
 
 ### ///// SET HEADERS
 print("Setting headers...")
-imports.columns = import_export_headers[0]
-exports.columns = import_export_headers[1]
-print(imports.head())
-print(exports.head())
+
+try:
+    imports.columns = import_export_headers[0]
+    print(imports.head())
+except:
+    print("skipping imports")
+
+try:
+    exports.columns = import_export_headers[1]
+    print(exports.head())
+except:
+    print("skipping exports")
 
 ### ///// COLUMNS TO STRING for dimensions
 
@@ -251,12 +259,18 @@ except (Exception, psycopg2.DatabaseError) as error:
 
 try:
     print("Creating empty DB schemas...")
-    for df in [imports, exports] + dimension_list_data:
+    for df in [imports, exports]:
         df_head = df.head(10).copy()
         all_columns = list(df_head)  # Creates list of all column headers
         df_head[all_columns] = df_head[all_columns].astype(str)
         df_head.head(0).to_sql(df.name, con=cnx, index=False)
-    print("DB schema created.")
+    print("DB schema created for imports and exports.")
+    for df in dimension_list_data:
+        df_head = df.head(10).copy()
+        df_head.iloc[:, 0] = df_head.iloc[:, 0].astype(int)
+        df_head.head(0).to_sql(df.name, con=cnx, index=False)
+    print("DB schema created for dimensions.")
+
 except (Exception, psycopg2.DatabaseError) as error:
     print("Error: %s" % error)
 
@@ -270,11 +284,12 @@ def copy_from_file(conn, df, table_name, project_folder_path):
     tmp_df = project_folder_path + df.name + ".csv"
 
     if not path.exists(df.name + ".csv"):
-        print("Saving to csv...")
+        print("Saving "+table_name+"to csv...")
         df.to_csv(tmp_df, index=False, sep=";", header=False)
     f = open(tmp_df, 'r')
     cursor = conn.cursor()
     try:
+        print("trying copy_from for"+table_name)
         cursor.copy_from(f, table_name, sep=";", null='')
         conn.commit()
     except (Exception, psycopg2.DatabaseError) as error:
@@ -326,11 +341,20 @@ print("Copy imports and exports to DB complete: " + str((time.process_time() - s
 
 if is_remove_stuff:
     print("Removing import and export files...")
+
     try:
-        for f in ["imports.csv","exports.csv"] + dimension_files:
+        os.remove("imports.csv")
+    except:
+        print("No imports file to delete.")
+    try:
+        os.remove("exports.csv")
+    except:
+        print("No exports file to delete.")
+    try:
+        for f in dimension_files:
             os.remove(f)
     except:
-        print("No output files to delete.")
+        print("No dimension files to delete.")
 
     # checking whether file exists or not
     if os.path.exists(trade_folder + "temp"):
@@ -384,7 +408,12 @@ def parse_sql(filename):
 if execute_queries:
     # Scripts to create SQL schema
     # files = ["export_queries.sql", "import_queries.sql"]
-    files = ["import_queries.sql"]
+    files = []
+    if len(import_files) != 0:
+        files.append("import_queries.sql")
+    if len(export_files) != 0:
+        files.append("export_queries.sql")
+
     for f in files:
         print("running", f)
         # Parse and execute .sql files
