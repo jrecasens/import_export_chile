@@ -1,0 +1,8 @@
+azure-storage-file-share
+flask
+flask-wtf
+flask_mail
+python-dotenv
+wtforms
+email-validator
+gunicorn

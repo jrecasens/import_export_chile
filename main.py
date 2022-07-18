@@ -1,431 +1,196 @@
-import sys
-from io import StringIO
-import pandas as pd
-import re
 import os.path
-from os import path
 import time
-import psycopg2
-from collections import defaultdict
-import sqlalchemy
-from zipfile import ZipFile
+from utils.data_process import get_years_month_loaded, get_files_to_load, get_dimensions, col_to_str, \
+    recreate_db, copy_csv_into_db, generate_temp_csv, drop_db_objects
+from utils.csv_load import load_trade_files
+from utils.sql_server_connector import SqlServerConnector
+from utils.azure_blob_storage import AzureBlogStorage
+# Configure Tolveet Logger
+from config import TolveetLogger, Config, MAIN_DIR
+TL = TolveetLogger()
+logger = TL.get_tolveet_logger()
 
 ### ///// PARAMETERS
 
+schema_name = "canola"
+trade_type = ['imports', 'exports']
+is_init = False
 is_sample = False
-is_excel = False
-is_csv_ready = False
-is_remove_stuff = True
-execute_queries = True
+is_execute_queries = True
+# https://datos.gob.cl/dataset/registro-de-importacion-2021
+# https://datos.gob.cl/dataset/registro-de-exportacion-2021
+start_total = time.time()
 
-project_folder_path = "C:/Github/import_export_chile/"
+### ///// DB CONNECTORS
+logger.info("///////////////////////////////////////////////////////")
+logger.info("////// FILE EXTRACTION AND DATAFRAME APPENDING ///////")
+logger.info("//////////////////////////////////////////////////////")
 
-columns_folder = project_folder_path + "data/columns/"
-dimensions_folder = project_folder_path + "data/dimensions/"
-trade_folder = project_folder_path + "data/trade/"
+start_db_connectors = time.time()
+storage = AzureBlogStorage(conn_str=Config.AZURE_STORAGE_CONNECT_STR)
+conn = SqlServerConnector(conn_str=Config.SQLALCHEMY_DATABASE_URI, storage=storage)
+raw_connection = conn.engine.raw_connection()
+# Get year and months that have been loaded
+years_month_loaded = get_years_month_loaded(conn, schema_name)
+# Get all file names that will be used
+files_to_load = get_files_to_load(is_sample)
+# Read SQL queries
+utils_folder = os.path.join(MAIN_DIR, "utils")
+sql_init_file = "create_db_objects.sql"
+sql_report_files = "report_queries.sql"
+sql_init_commands = conn.parse_sql(os.path.join(utils_folder, sql_init_file))
+sql_report_commands = conn.parse_sql(os.path.join(utils_folder, sql_report_files), is_debug=False)
+# Get only section that drop stuff (to run first and facilitate debugging).
+sql_drop_commands = [x for x in sql_init_commands if x.lower().startswith('drop')]
+end_db_connectors = time.time() - start_db_connectors
 
-### ///// READ ALL EXISTING FILES
-print("Reading content of folder: " + project_folder_path)
-import_files = []
-export_files = []
-dimension_files = []
-headers_files = []
+### FILES TO LOAD
 
-for folders in [columns_folder, dimensions_folder, trade_folder]:
-    for filename in os.listdir(folders):
-        name = os.path.splitext(filename)[0]
-        extension = os.path.splitext(filename)[1]
-        if extension == ".zip" and name.startswith('import'):
-            import_files.append(str(filename))
-        elif extension == ".zip" and name.startswith('export'):
-            export_files.append(str(filename))
-        elif extension == ".csv" and name.startswith('aduana_codigos'):
-            dimension_files.append(str(filename))
-        elif extension == ".xlsx" and name.startswith('descripcion-y-estructura-de-datos'):
-            headers_files.append(str(filename))
+start_csv_load = time.time()
+# Load trade data from .txt
+years_month_to_load, imports, exports = load_trade_files(files_to_load, is_init)
+# Load dimensions into a DF
+dimensions_dict = get_dimensions(files_to_load['dimension_files'])
+# Change all columns to string (to prevent data type issues).
+col_to_str(dimensions_dict)
+end_csv_load = time.time() - start_csv_load
 
-# Remove Samples?
-for item in import_files[:]:
-    if is_sample:
-        if "sample" not in item:
-            import_files.remove(item)
-    else:
-        if "sample" in item:
-            import_files.remove(item)
+if is_init:
+    logger.info("///////////////////////////////////")
+    logger.info("/// RECREATE EMPTY DATABASE ///////")
+    logger.info("///////////////////////////////////")
 
-for item in export_files[:]:
-    if is_sample:
-        if "sample" not in item:
-            export_files.remove(item)
-    else:
-        if "sample" in item:
-            export_files.remove(item)
+    start_init_db = time.time()
 
-print("Files to use:")
-print(import_files)
-print(export_files)
-print(dimension_files)
-print(headers_files)
-
-### ///// LOAD DIMENSIONS
-
-print("Reading dimensions...")
-dimension_list_name = []
-dimension_list_data = []
-for f in dimension_files:
-    name = os.path.splitext(f)[0]
-    dimension_list_name.append(name)
-    print(f)
-    with open(str(dimensions_folder + f), 'rt', encoding='utf-8') as fileObject:
-        temp_txt = StringIO(fileObject.read())
-        df_temp = pd.read_csv(temp_txt, sep=";", low_memory=False)
-        df_temp.name = name
-    print("Appending files...")
-    dimension_list_data.append(df_temp)
-
-dimensions_dict = dict(zip(dimension_list_name, dimension_list_data))
-
-print(dimensions_dict)
-print("Appending Complete.")
-
-### ///// GET HEADERS
-
-for f in headers_files:
-    if "din" in f:
-        import_headers_file = f
-    elif "dus" in f:
-        export_headers_file = f
-
-# Column Names
-import_headers_raw = pd.read_excel(columns_folder + import_headers_file, sheet_name=None)
-export_headers_raw = pd.read_excel(columns_folder + export_headers_file, sheet_name=None)
-import_export_headers = []
-
-for df in [import_headers_raw, export_headers_raw]:
-    xxx = df[list(df.keys())[1]].iloc[0].tolist()
-    xxx = [x for x in xxx if str(x) != 'nan']
-    df_headers = [s.strip() for s in xxx]
-    length = len(df_headers)
-    regex = re.compile("[^0-9a-zA-Z]+")
-    for i in range(length):
-        df_headers[i] = re.sub(regex, '_', df_headers[i])
-    import_export_headers.append(df_headers)
-
-print("Got Import headers:")
-print(import_export_headers[0])
-print("Got Export headers:")
-print(import_export_headers[1])
-
-### ///// UNZIP IMPORT AND EXPORT FILES
-start = time.process_time()
-if not is_csv_ready:
-    print("Extracting files to temporary folder...")
-    for z in [import_files, export_files]:
-        for f in z:
-            # Create a ZipFile Object and load sample.zip in it
-            with ZipFile(trade_folder + f, 'r') as zipObj:
-               # Extract all the contents of zip file in different directory
-               zipObj.extractall(trade_folder + 'temp')
-
-print("Zip extraction Done!" + str((time.process_time() - start)))
-# 1.5 years take 9 min
-
-### ///// READ IMPORTS CSVs (from Temp folder)
-start = time.process_time()
-if not is_csv_ready:
-
-    all_extracted_files = []
-    for filename in os.listdir(trade_folder + 'temp'):
-        extension = os.path.splitext(filename)[1]
-        if extension == ".txt":
-           all_extracted_files.append(str(filename))
-    print(all_extracted_files)
-
-    import_files_extracted = []
-    export_files_extracted = []
-    for f in all_extracted_files:
-        name = os.path.splitext(f)[0]
-        extension = os.path.splitext(f)[1]
-        if extension == ".txt" and name.startswith('Import'):
-            import_files_extracted.append(str(f))
-        elif extension == ".txt" and name.startswith('Export'):
-            export_files_extracted.append(str(f))
-
-    print("Reading files...")
-    imports = pd.DataFrame()
-    exports = pd.DataFrame()
-
-    for f in [import_files_extracted, export_files_extracted]:
-        for i in f:
-            f_path = str(trade_folder + 'temp/' + i)
-            with open(f_path, 'rt', encoding='utf-8') as fileObject:
-                temp_txt = StringIO(fileObject.read())
-                df_temp = pd.read_csv(temp_txt, sep=";", header=None, low_memory=False)
-            print("Appending files..." + i)
-            if i.startswith('Export'):
-                exports = exports.append(df_temp)
-            else:
-                imports = imports.append(df_temp)
-            del df_temp
-        print("Appending Complete for " + ",".join(f))
-
-    print("Created Import file with " + str(len(imports.index)) + " rows")
-    print("Created Export file with " + str(len(exports.index)) + " rows")
-
-    # csv GENERATION
-    print("Saving as .csv....")
-    time.sleep(1)
-    imports.to_csv(project_folder_path + "imports.csv", index=False, sep=";", header=False)
-    exports.to_csv(project_folder_path + "exports.csv", index=False, sep=";", header=False)
+    tables_to_drop = [imports.name, exports.name] + list(dimensions_dict.keys())
+    logger.info("Dropping DB objects...")
+    drop_db_objects(conn, raw_connection, tables_to_drop, schema_name, sql_drop_commands)
+    logger.info("Recreating DB...")
+    recreate_db(conn,
+                raw_connection,
+                imports,
+                exports,
+                dimensions_dict,
+                schema_name,
+                sql_init_commands
+                )
+    logger.info("/////////// DB CREATION WITH EMPTY SCHEMA IS COMPLETE.")
+    end_init_db = time.time() - start_init_db
 
 else:
-    try:
-        print("Reading .csv....")
-        imports = pd.read_csv(project_folder_path + " imports.csv", sep=";", header=None)
-        exports = pd.read_csv(project_folder_path + " exports.csv", sep=";", header=None)
+    logger.info("///////////////////////////////////")
+    logger.info("//// INCREMENTAL DATA LOADS ///////")
+    logger.info("///////////////////////////////////")
 
-    except (Exception, psycopg2.DatabaseError) as error:
-        print("There is no CSV available. Error: %s" % error)
+    start_data_process = time.time()
 
-print("csv generation Done!" + str((time.process_time() - start)))
-# 1.5 years take 9 min
+    incremental_loads = years_month_loaded.merge(years_month_to_load, how='outer', on=["trade_type", "period_id"])
 
-### ///// SET HEADERS
-print("Setting headers...")
+    periods_to_load = incremental_loads[(incremental_loads['num_records_x'].isnull())]
+    periods_to_delete = incremental_loads[(~incremental_loads['num_records_x'].isnull()) &
+                                          (~incremental_loads['num_records_y'].isnull()) &
+                                          (incremental_loads['num_records_x'] != incremental_loads['num_records_y'])]
 
-try:
-    imports.columns = import_export_headers[0]
-    print(imports.head())
-except:
-    print("skipping imports")
+    periods_to_load_dict = {}
+    for t in trade_type:
+        df = periods_to_load[periods_to_load["trade_type"] == t]
+        periods = []
+        for index, row in df.iterrows():
+            periods.append(row['period_id'])
+        periods_to_load_dict[t] = periods
 
-try:
-    exports.columns = import_export_headers[1]
-    print(exports.head())
-except:
-    print("skipping exports")
+    periods_to_delete_dict = {}
+    for t in trade_type:
+        df = periods_to_delete[periods_to_delete["trade_type"] == t]
+        periods = []
+        for index, row in df.iterrows():
+            periods.append(row['period_id'])
+        periods_to_delete_dict[t] = periods
 
-### ///// COLUMNS TO STRING for dimensions
+    logger.info("periods_to_load_dict:")
+    logger.info(periods_to_load_dict)
 
-print("Dimension Columns to String...")
-for dim in dimensions_dict.values():
-    all_columns = list(dim)  # Creates list of all column headers
-    dim[all_columns] = dim[all_columns].astype(str)
+    logger.info("periods_to_delete_dict:")
+    logger.info(periods_to_delete_dict)
 
-# 1.5 years take 9 min
+    # DELETE: Remove records from DB
+    for t in trade_type:
+        if len(periods_to_delete_dict[t]) != 0:
+            lst = periods_to_delete_dict[t]
+            lst_str = "('{0}".format("', '".join(lst))+"')"
+            query = "DELETE FROM {0}.{1} " \
+                    "WHERE period_id IN {2};".format(schema_name, t, lst_str)
+            conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=[query], debug=True)
 
-### ///// DATABASE
+    # LOAD: Filter imports and exports
+    # Add deleted periods
+    for t in trade_type:
+        periods_to_load_dict[t] = periods_to_load_dict[t] + periods_to_delete_dict[t]
 
-# Database Credentials by machine
-db_cred = defaultdict(dict)
-db_cred['local'] = {"drivername": "postgresql",
-                         "dbserverName": "localhost",
-                         "port": "5432",
-                         "dbusername": "postgres",
-                         "dbpassword": "abc123",
-                         "dbname": "agricola"}
+    # Filter export and import df (select only what needs to be loaded
+    imports = imports[imports.period_id.isin(periods_to_load_dict['imports'])]
+    exports = exports[exports.period_id.isin(periods_to_load_dict['exports'])]
 
-username = db_cred['local']['dbusername']
-password = db_cred['local']['dbpassword']
-ipaddress = db_cred['local']['dbserverName']
-port = db_cred['local']['port']
-dbname = db_cred['local']['dbname']
+    imports.name = "imports"
+    exports.name = "exports"
+    end_data_process = time.time() - start_data_process
 
-# A long string that contains the necessary Postgres login information
-postgres_str = f'postgresql://{username}:{password}@{ipaddress}:{port}/{dbname}'
+    start_data_load = time.time()
+    logger.info("Loading DF into DB....")
+    generate_temp_csv(imports, exports)
+    copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, dimensions_dict)
+    end_data_load = time.time() - start_data_load
 
-# Create the connection
-cnx = sqlalchemy.create_engine(postgres_str)
-raw_con = cnx.raw_connection()
-raw_con.set_isolation_level(0)
+if not is_init and is_execute_queries:
+    logger.info("///////////////////////////////////")
+    logger.info("//// SQL REPORTING LAYER /////////")
+    logger.info("///////////////////////////////////")
 
-# Create schema
-print("Creating table in DB....")
-imports.name = "imports"
-exports.name = "exports"
+    start_sql_report_queries = time.time()
+    logger.info("Running SQL Reporting queries...")
+    conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=sql_report_commands, debug=True)
+    end_sql_report_queries = time.time() - start_sql_report_queries
 
-try:
-    cur = raw_con.cursor()
-    for t in [imports.name, exports.name]:
-        cur.execute("drop table if exists " + t + " cascade")
-    print("Import and Export DB tables removed.")
-    for dim in dimension_list_name:
-        cur.execute("drop table if exists " + dim + " cascade")
-    print("Dimension DB tables removed.")
-    cur.close()
-except (Exception, psycopg2.DatabaseError) as error:
-    print("Error: %s" % error)
-
+end_total = time.time() - start_total
 
 try:
-    print("Creating empty DB schemas...")
-    for df in [imports, exports]:
-        df_head = df.head(10).copy()
-        all_columns = list(df_head)  # Creates list of all column headers
-        df_head[all_columns] = df_head[all_columns].astype(str)
-        df_head.head(0).to_sql(df.name, con=cnx, index=False)
-    print("DB schema created for imports and exports.")
-    for df in dimension_list_data:
-        df_head = df.head(10).copy()
-        df_head.iloc[:, 0] = df_head.iloc[:, 0].astype(int)
-        df_head.head(0).to_sql(df.name, con=cnx, index=False)
-    print("DB schema created for dimensions.")
+    end_db_connectors = str(round((end_db_connectors % 3600) / 60, 2))
+    print("DB CONNECTORS: {}".format(end_db_connectors))
+except NameError:
+    pass
 
-except (Exception, psycopg2.DatabaseError) as error:
-    print("Error: %s" % error)
+try:
+    end_csv_load = str(round((end_csv_load % 3600) / 60, 2))
+    print("CSV LOAD: {}".format(end_csv_load))
+except NameError:
+    pass
 
-def copy_from_file(conn, df, table_name, project_folder_path):
-    """
-    Here we are going save the dataframe on disk as
-    a csv file, load the csv file
-    and use copy_from() to copy it to the table
-    """
-    # Save the dataframe to disk
-    tmp_df = project_folder_path + df.name + ".csv"
+try:
+    end_init_db = str(round((end_init_db % 3600) / 60, 2))
+    print("INIT DB: {}".format(end_init_db))
+except NameError:
+    pass
 
-    if not path.exists(df.name + ".csv"):
-        print("Saving "+table_name+"to csv...")
-        df.to_csv(tmp_df, index=False, sep=";", header=False)
-    f = open(tmp_df, 'r')
-    cursor = conn.cursor()
-    try:
-        print("trying copy_from for"+table_name)
-        cursor.copy_from(f, table_name, sep=";", null='')
-        conn.commit()
-    except (Exception, psycopg2.DatabaseError) as error:
-        print("Error: %s" % error)
-        conn.rollback()
-        cursor.close()
-        return 1
-    print("copy_from_file() done")
-    cursor.close()
+try:
+    end_data_process = str(round((end_data_process % 3600) / 60, 2))
+    print("DATA PROCESS {}".format(end_data_process))
+except NameError:
+    pass
 
-start = time.process_time()
+try:
+    end_data_load = str(round((end_data_load % 3600) / 60, 2))
+    print("DATA LOAD TO DB {}".format(end_data_load))
+except NameError:
+    pass
 
-## Copy dimensions
-print("Copying dimensions....")
-for k, v in dimensions_dict.items():
-    copy_from_file(raw_con, v, k, project_folder_path)
+try:
+    end_sql_report_queries = str(round((end_sql_report_queries % 3600) / 60, 2))
+    print("SQL REPORTING QUERIES {}".format(end_sql_report_queries))
+except NameError:
+    pass
 
-## Copy imports and exports
-
-print("Copying imports to DB....")
-copy_from_file(raw_con, imports, imports.name, project_folder_path)
-print("Copying exports to DB....")
-copy_from_file(raw_con, exports, exports.name, project_folder_path)
-print("Copy imports and exports to DB complete: " + str((time.process_time() - start)))
-
-
-# 1.5 years take X seconds
-
-# # QUERY
-# print("Querying...")
-# #column_of_interest1 = 'dnombre'
-# column_of_interest1 = 'ARANC_NAC'
-# list_contains1 = ["1001","0910"]
-# is_search_start = False
-# is_search_end = True
-#
-# list_contains_str = str(("%'" if is_search_end else "'") + " OR "+column_of_interest1+" LIKE " + ("'%" if is_search_start else "'")).join(list_contains1)
-# list_contains_str = column_of_interest1 + " LIKE " + ("'%" if is_search_start else "'") + list_contains_str + ("%'" if is_search_end else "'")
-#
-# print(list_contains_str)
-#
-# print("Apply filter: " + list_contains_str)
-# df_query_output = sqldf("SELECT * FROM df WHERE " + list_contains_str)
-
-
-# if is_excel:
-#     print("Saving pandas df to Excel....")
-#     df.to_excel(project_folder_path + "output.xlsx")
-
-if is_remove_stuff:
-    print("Removing import and export files...")
-
-    try:
-        os.remove("imports.csv")
-    except:
-        print("No imports file to delete.")
-    try:
-        os.remove("exports.csv")
-    except:
-        print("No exports file to delete.")
-    try:
-        for f in dimension_files:
-            os.remove(f)
-    except:
-        print("No dimension files to delete.")
-
-    # checking whether file exists or not
-    if os.path.exists(trade_folder + "temp"):
-        try:
-            import stat
-            os.chmod(trade_folder + "temp", stat.S_IWRITE)
-            import shutil
-            shutil.rmtree(trade_folder + "temp")
-            # os.unlink(raw_folder + "temp")
-            # os.remove(raw_folder + "temp")
-        except:
-            print("error. cannot remove temp.")
-    else:
-        # file not found message
-        print("File not found in the directory")
-
-### ///// SQL QUERIES
-
-
-start = time.process_time()
-
-def parse_sql(filename):
-    data = open(filename, 'r').readlines()
-    stmts = []
-    DELIMITER = ';'
-    stmt = ''
-
-    for lineno, line in enumerate(data):
-        if not line.strip():
-            continue
-
-        if line.startswith('--'):
-            continue
-
-        if 'DELIMITER' in line:
-            DELIMITER = line.split()[1]
-            continue
-
-        if (DELIMITER not in line):
-            stmt += line.replace(DELIMITER, ';')
-            continue
-
-        if stmt:
-            stmt += line
-            stmts.append(stmt.strip())
-            stmt = ''
-        else:
-            stmts.append(line.strip())
-    return stmts
-
-if execute_queries:
-    # Scripts to create SQL schema
-    # files = ["export_queries.sql", "import_queries.sql"]
-    files = []
-    if len(import_files) != 0:
-        files.append("import_queries.sql")
-    if len(export_files) != 0:
-        files.append("export_queries.sql")
-
-    for f in files:
-        print("running", f)
-        # Parse and execute .sql files
-        queryParsed = parse_sql(project_folder_path + f)
-
-        # Commit Transactions by batch
-        with raw_con.cursor() as cur:
-            for stmt in queryParsed:
-                if stmt != "":
-                    cur.execute(stmt)
-                    raw_con.commit()
-
-print("SQL query execution: " + str((time.process_time() - start)))
-
-print("Done!")
+try:
+    end_total = str(round((end_total % 3600) / 60,2))
+    print("TOTAL TIME:  {}".format(end_total))
+except NameError:
+    pass
