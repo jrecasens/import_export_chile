@@ -254,11 +254,14 @@ class SqlServerConnector:
                 self._execute_command(query)
                 self.logger.warning("SQL Connector - DELETE was successful.")
             except Exception as ex:
-                self.logger.warning("SQL Connector - Could not delete records from table. Exception:")
+                self.logger.warning("SQL Connector - Could not delete records from table. Exception:" + str(ex))
 
 
-    def _clear_table(self, table, schema):
-        query = f'DELETE FROM {schema}.{table};'
+    def _clear_table(self, table, schema, add_conditions=None):
+        query = f'DELETE FROM {schema}.{table} '
+        if add_conditions is not None:
+            query = query + add_conditions
+        query = query + ';'
         self._execute_command(query)
 
     def _execute_command(self, command):

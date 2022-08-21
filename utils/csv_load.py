@@ -13,7 +13,7 @@ TL = TolveetLogger()
 logger = TL.get_tolveet_logger()
 
 def get_headers(headers_files):
-    project_folder, columns_folder, dimensions_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
     logger.info("Importing Headers...")
     for f in headers_files:
         if "din" in f:
@@ -42,7 +42,7 @@ def get_headers(headers_files):
 
 def get_import_export(import_files, export_files, is_init=False):
 
-    project_folder, columns_folder, dimensions_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
     # Check whether the specified path exists or not
     if not os.path.exists(temp_folder):
         # Create a new directory because it does not exist

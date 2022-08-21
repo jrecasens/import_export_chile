@@ -51,7 +51,7 @@ class AzureBlogStorage:
         if image_file is not None:
             self.logger.info("Azure Blob Storage - Temporary local storage of " + image_name)
             # Set path to file
-            image_file.save(upload_file_path)
+            image_file.save(upload_file_path, quality=95)
 
         try:
             self.logger.info("Azure Blob Storage - Uploading blob: " + image_name)
@@ -66,25 +66,25 @@ class AzureBlogStorage:
             self.logger.error("Azure Blob Storage - Error uploading. Exception:" + str(ex))
             return 'Not applicable'
 
-    def pickle_upload(self, container, object_to_pickle, pickle_name, des_folder=""):
-        """ Upload image to azure and retrieve URL"""
+    def file_upload(self, container, file_name, file_path=pathlib.Path().resolve(), file=None, des_folder=""):
+        """ Upload file to blog storage"""
 
-        if ('.pkl' not in pickle_name):
-            pickle_name = pickle_name + '.pkl'
+        local_file_path = os.path.join(file_path, file_name)
+        if file is not None:
+            if ('.pkl' not in file_name):
+                file_name = file_name + '.pkl'
+                local_file_path = os.path.join(file_path, file_name)
+            # Save to file system
+            self.logger.info("Azure Blob Storage - Temporary local storage of " + file_name)
+            file.to_pickle(local_file_path)
 
         # Create a blob client using the local file name as the name for the blob
         if not des_folder == '':
             des_folder = des_folder + "/"
-        azure_blob_client = self.service_client.get_blob_client(container=container, blob=des_folder + pickle_name)
-
-        # Save to file system
-        local_file_path = os.path.join(pathlib.Path().resolve(), pickle_name)
-        self.logger.info("Azure Blob Storage - Temporary local storage of " + pickle_name)
-        # Set path to file
-        object_to_pickle.to_pickle(local_file_path)
+        azure_blob_client = self.service_client.get_blob_client(container=container, blob=des_folder + file_name)
 
         try:
-            self.logger.info("Azure Blob Storage - Uploading blob: " + pickle_name)
+            self.logger.info("Azure Blob Storage - Uploading blob: " + file_name)
             with open(local_file_path, "rb") as data:
                 azure_blob_client.upload_blob(data, overwrite=True)
             os.remove(local_file_path)

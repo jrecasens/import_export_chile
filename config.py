@@ -21,10 +21,12 @@ class Config:
     TIME_ZONE_PYTZ = timezone("America/New_York")
     TIME_ZONE_WINDOWS = "Eastern Standard Time"
 
+    CURRENCIES = ['usd', 'eur', 'cad', 'aud']
     FOLDER_DATA = "data"
     FOLDER_TRADE = "chile_trade"
     FOLDER_COLUMNS = "columns"
     FOLDER_DIMENSIONS = "dimensions"
+    FOLDER_CURRENCY = "currency"
     FOLDER_IMPORTS_EXPORTS = "imports_exports"
 
     AZURE_SQL_SERVER = os.getenv('AZURE_SQL_SERVER')

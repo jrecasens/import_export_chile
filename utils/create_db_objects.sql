@@ -117,6 +117,25 @@ CREATE INDEX index_exports_UNIDADMEDIDA ON canola.exports ("UNIDADMEDIDA");
 
 
 
+-- -- -- -- -- -- -- -- -- -- -- --  
+-- -- -- C U R R E N C Y -- -- -- -- 
+-- -- -- -- -- -- -- -- -- -- -- -- 
+
+-- remove new lines
+UPDATE canola.currency_converter SET to_clp=TRIM(REPLACE(REPLACE(to_clp, CHAR(13), ''), CHAR(10), ''));
+UPDATE canola.currency_converter SET to_usd=TRIM(REPLACE(REPLACE(to_usd, CHAR(13), ''), CHAR(10), ''));
+UPDATE canola.currency_converter SET to_eur=TRIM(REPLACE(REPLACE(to_eur, CHAR(13), ''), CHAR(10), ''));
+UPDATE canola.currency_converter SET to_cad=TRIM(REPLACE(REPLACE(to_cad, CHAR(13), ''), CHAR(10), ''));
+UPDATE canola.currency_converter SET to_aud=TRIM(REPLACE(REPLACE(to_aud, CHAR(13), ''), CHAR(10), ''));
+
+ALTER TABLE canola.currency_converter ALTER COLUMN "to_clp" float;
+ALTER TABLE canola.currency_converter ALTER COLUMN "to_usd" float;
+ALTER TABLE canola.currency_converter ALTER COLUMN "to_eur" float;
+ALTER TABLE canola.currency_converter ALTER COLUMN "to_cad" float;
+ALTER TABLE canola.currency_converter ALTER COLUMN "to_aud" float;
+
+
+
 -- Remove all records that were not read properly.
 -- Use ADUANA column to filter out all non integer identifiers.
 -- DELETE FROM canola.exports
