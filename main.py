@@ -15,6 +15,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import subprocess
+from plotly.utils import PlotlyJSONEncoder
+from json import dumps
+import pickle
+import urllib.request
 
 import plotly.io as pio
 pio.renderers.default = "browser"
@@ -41,10 +45,10 @@ trade_type = ['imports', 'exports']
 excel_password = 'canolachile.com'
 azure_storage_container = "other"
 azure_storage_folder = "canolachile"
+azure_storage_url = "https://tolveetstorage.blob.core.windows.net/other/canolachile/"
 is_init = False
 is_sample = False
 is_execute_queries = True
-is_create_plots = True
 start_total = time.time()
 
 ### ///// DB CONNECTORS
@@ -177,7 +181,6 @@ else:
     copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter, dimensions_dict, remove_tmp=True)
     end_data_load = time.time() - start_data_load
 
-
 if not is_init and is_execute_queries:
     logger.info("///////////////////////////////////")
     logger.info("//// SQL REPORTING LAYER /////////")
@@ -189,6 +192,7 @@ if not is_init and is_execute_queries:
 
     blob_upload_lst = []
     excel_file_lst = []
+    csv_file_lst = []
     # Export views as .xlsx
     views_to_zip = [
                     'vw_imports_canola_trigo',
@@ -267,7 +271,8 @@ if not is_init and is_execute_queries:
                 'imports_canola_agg_canada': imports_canola_agg_canada,
                 'imports_canola_agg_argentina': imports_canola_agg_argentina,
                 'imports_canola_agg_otros': imports_canola_agg_otros}
-    # Add missing dates (for reporting)
+
+    logger.info("Adding missing dates (for reporting)...")
     for k, v in csv_dict.items():
         logger.info("Working on " + k +" ...")
         if len(v) > 0:
@@ -277,7 +282,26 @@ if not is_init and is_execute_queries:
         csv_file = k + ".csv"
         csv_path = str(os.path.join(MAIN_DIR, csv_file))
         v.to_csv(csv_path, index=False)
-        blob_upload_lst.append(csv_file)
+        csv_file_lst.append(csv_file)
+
+    logger.info("Create plot from csv and save as JSON...")
+    graph_json_name_lst = []
+    for f, v in csv_dict.items():
+        graph_json_file_name = f + '_graph.json'
+        graph_json_name_lst.append(graph_json_file_name)
+        title = "Pais: " + f.split('_')[-1].capitalize()
+        df = pd.read_csv(f + '.csv')
+        if len(df) > 0:
+            fig = create_imports_canola_plot(df=df, title=title)
+            # fig.show()
+            graph_json = dumps(fig, cls=PlotlyJSONEncoder)
+        else:
+            fig = None
+            graph_json = 1
+        graph_json_file = open(graph_json_file_name, "wb")
+        pickle.dump(graph_json, graph_json_file)
+        graph_json_file.close()
+        blob_upload_lst.append(graph_json_file_name)
 
     logger.info("Uploading to Azure Blob Storage...")
     for f in set(blob_upload_lst):
@@ -286,21 +310,26 @@ if not is_init and is_execute_queries:
                             file_path=MAIN_DIR,
                             des_folder=azure_storage_folder)
 
-    for f in blob_upload_lst + excel_file_lst:
-        os.remove(f)
+    logger.info("Deleting files...")
+    for f in blob_upload_lst + excel_file_lst + csv_file_lst:
+        if os.path.exists(f):
+            os.remove(f)
+        else:
+            logger.warning("Can not delete "+f+" as it doesn't exists")
+
+    for f in graph_json_name_lst:
+        logger.info("Plotting..." + str(f))
+        try:
+            ff = urllib.request.urlopen(azure_storage_url + f)
+            ff_obj = pickle.load(ff)
+            ff.close()
+            fig = pio.from_json(ff_obj)
+            fig.show()
+        except Exception as ex:
+            logger.warning("Plot "+f+" cannot be created.")
 
     end_sql_report_queries = time.time() - start_sql_report_queries
 
-if is_create_plots:
-
-    csv_lst = ['imports_canola_agg_all', 'imports_canola_agg_canada',
-                'imports_canola_agg_argentina', 'imports_canola_agg_otros']
-    for f in csv_lst:
-        title = "Pais: " + f.split('_')[-1].capitalize()
-        df = pd.read_csv(f + '.csv')
-        if len(df) > 0:
-            fig = create_imports_canola_plot(df=df, title=title)
-            fig.show()
 
 
 end_total = time.time() - start_total

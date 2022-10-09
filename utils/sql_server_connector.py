@@ -9,6 +9,7 @@ import uuid
 import urllib
 from os import path
 import os
+import json
 
 def sqlalchemy_db_uri(conn_dict):
     """Create SQL Alchemy Database URI"""
@@ -36,13 +37,14 @@ def sqlalchemy_db_uri(conn_dict):
 class SqlServerConnector:
     """Connector to interact with a sql server database"""
 
-    def __init__(self, conn_str, storage):
+    def __init__(self, conn_str, storage, log_prefix=''):
         # Configure Tolveet Logger
         TL = config.TolveetLogger()
         self.logger = TL.get_tolveet_logger()
 
         self.engine = self._create_database_engine(conn_str)
         self.storage = storage
+        self.log_prefix = log_prefix
 
     def _create_database_engine(self, conn_str):
         """Create a sqlalchemy database engine """
@@ -58,10 +60,10 @@ class SqlServerConnector:
         _engine = self.engine
         try:
             _table_schema = db.Table(table_name, _metadata, autoload_with=_engine, extend_existing=True)
-            self.logger.info(str("SQL Connector - Successful loading of schema for DB table: " + table_name))
+            self.logger.info(self.log_prefix + str("SQL Connector - Successful loading of schema for DB table: " + table_name))
         except Exception as ex:
             _table_schema = None
-            self.logger.error("SQL Connector - Exception:" + str(ex))
+            self.logger.error(self.log_prefix + "SQL Connector - Exception:" + str(ex))
         return _table_schema
 
     def generate_image_name(self, device_source_id, detection_type, date_detection, extension="jpeg"):
@@ -74,86 +76,130 @@ class SqlServerConnector:
         image_name_new = device_source_id + '_' + detection_type + '_' + date_detection + '_' + id_image + '.' + extension
         return image_name_new
 
-    def insert_camera_event(self, entity, container):
-        """ Insert Camera Event Detection and related image when applicable """
-        result = False
+    def insert_camera_event(self, entity):
+        """ Insert Camera Event to DB """
+        con = self.engine.connect()
         try:
-            self.logger.info("SQL Connector - Connecting to DB...")
-            con = self.engine.connect()
-            self.logger.info("SQL Connector - Checking camera registration in customer DB...")
-            is_authorized, device_subtype = self.is_camera_authorized(entity.device_source_id,
-                                                                      entity.device_mac_address)
-            if is_authorized:
-                self.logger.info("SQL Connector - Camera is registered in DB.")
-                self.logger.info("SQL Connector - Insert to camera_event_detection table...")
-                camera_event_detection = self.get_schema_metadata("camera_event_detection")
-                stmt_1 = db.insert(camera_event_detection).values(
-                    device_source_id=entity.device_source_id,
-                    event_identifier=entity.event_identifier,
-                    date_detection=entity.date_detection,
-                    detection_type=entity.detection_type,
-                    details_json=entity.details_json
-                )
-                con.execute(stmt_1)
-                self.logger.info("SQL Connector - Successful insert.")
-                result = True
-                if device_subtype == 'anpr':
-                    try:
-                        self.logger.info("SQL Connector - Insert to camera_event_images table...")
-                        image_name = self.generate_image_name(device_source_id=entity.device_source_id,
-                                                              detection_type=entity.detection_type,
-                                                              date_detection=entity.date_detection)
-                        camera_event_images = self.get_schema_metadata("camera_event_images")
-                        stmt_2 = db.insert(camera_event_images).values(
-                            device_source_id=entity.device_source_id,
-                            event_identifier=entity.event_identifier,
-                            date_detection=entity.date_detection,
-                            image_url=self.storage.image_upload(container=container,
-                                                                image_file=entity.image,
-                                                                image_name=image_name,
-                                                                des_folder='')
-                        )
-                        con.execute(stmt_2)
-                        self.logger.info("SQL Connector - Successful insert.")
-                        self.logger.info("SQL Connector - Insert to camera_event_vehicle_attributes table...")
-                        camera_event_vehicle_attributes = self.get_schema_metadata("camera_event_vehicle_attributes")
-                        stmt_3 = db.insert(camera_event_vehicle_attributes).values(
-                            device_source_id=entity.device_source_id,
-                            event_identifier=entity.event_identifier,
-                            date_detection=entity.date_detection,
-                            vehicle_license_plate=entity.vehicle_license_plate,
-                            vehicle_license_plate_confidence_level=entity.vehicle_license_plate_confidence_level,
-                            vehicle_direction=entity.vehicle_direction,
-                            vehicle_type=entity.vehicle_type,
-                            vehicle_color=entity.vehicle_color
-                        )
-                        con.execute(stmt_3)
-                        self.logger.info("SQL Connector - Successful insert.")
-                        result = True
-                    except Exception as ex:
-                        result = False
-                        self.logger.error("SQL Connector - Could not insert ANPR image and/or attributes. PENDING IMPLEMENTATION, ROLLBACK OF EVENT.")
-                        self.logger.error("SQL Connector - Exception:" + str(ex))
-            else:
-                result = False
-                status = "SQL Connector - Camera " + entity.device_source_id + " is not registered in customer DB.", 401
-                self.logger.error(status[0])
-            con.close()
-            self.logger.info("SQL Connector - Connection closed.")
+            self.logger.info(self.log_prefix + "SQL Connector - Camera is registered in DB.")
+            self.logger.info(self.log_prefix + "SQL Connector - Insert to camera_event_detection table...")
+            camera_event_detection = self.get_schema_metadata("camera_event_detection")
+            stmt = db.insert(camera_event_detection).values(
+                device_source_id=entity.device_source_id,
+                event_identifier=entity.event_identifier,
+                date_detection=entity.date_detection,
+                detection_type=entity.detection_type,
+                details_json=entity.details_json
+            )
+            con.execute(stmt)
+            self.logger.info(self.log_prefix + "SQL Connector - Successful insert.")
+            result = True
         except Exception as ex:
             result = False
-            self.logger.error("SQL Connector - Exception:" + str(ex))
+            self.logger.error(self.log_prefix + "SQL Connector - Exception:" + str(ex))
         return result
 
-    def delete_camera_events(self, device_source_id):
+    def insert_camera_image(self, entity, container):
+        """ Insert Camera Image to DB """
+        con = self.engine.connect()
+        try:
+            self.logger.info(self.log_prefix + "SQL Connector - Insert to camera_event_images table...")
+            image_name = self.generate_image_name(device_source_id=entity.device_source_id,
+                                                  detection_type=entity.detection_type,
+                                                  date_detection=entity.date_detection)
+            if ('.jpg' not in image_name) and ('.jpeg' not in image_name):
+                image_name = image_name + '.jpeg'
+            camera_event_images = self.get_schema_metadata("camera_event_images")
+            stmt = db.insert(camera_event_images).values(
+                device_source_id=entity.device_source_id,
+                event_identifier=entity.event_identifier,
+                date_detection=entity.date_detection,
+                image_url=self.storage.image_upload(container=container,
+                                                    image_file=entity.image,
+                                                    image_name=image_name,
+                                                    des_folder=''),
+                image_name=image_name
+            )
+            con.execute(stmt)
+            self.logger.info(self.log_prefix + "SQL Connector - Successful insert.")
+            result = image_name, True
+        except Exception as ex:
+            result = '', False
+            self.logger.error(self.log_prefix + "SQL Connector - Could not insert image. Exception:" + str(ex))
+        return result
+
+    def insert_camera_image_predictions(self, entity, image_name, model_name):
+        """ Insert Camera Image to DB """
+        con = self.engine.connect()
+        try:
+            self.logger.info(
+                self.log_prefix + "SQL Connector - Insert to image_predictions table...")
+            image_predictions = self.get_schema_metadata("image_predictions")
+            stmt_3 = db.insert(image_predictions).values(
+                image_name=image_name,
+                model_name=model_name,
+                pred_raw_output=entity.pred_raw_output,
+                device_source_id=entity.device_source_id
+            )
+            con.execute(stmt_3)
+            self.logger.info(self.log_prefix + "SQL Connector - Successful insert.")
+            result = image_name, True
+        except Exception as ex:
+            result = '', False
+            self.logger.error(self.log_prefix + "SQL Connector - Could not insert predictions. Exception:" + str(ex))
+        return result
+
+    def insert_vehicle_attributes(self, entity, image_name):
+        """ Insert Camera Image to DB """
+        con = self.engine.connect()
+        try:
+            self.logger.info(self.log_prefix + "SQL Connector - Insert to camera_event_vehicle_attributes table...")
+            camera_event_vehicle_attributes = self.get_schema_metadata("camera_event_vehicle_attributes")
+            stmt_4 = db.insert(camera_event_vehicle_attributes).values(
+                device_source_id=entity.device_source_id,
+                event_identifier=entity.event_identifier,
+                image_name=image_name,
+                date_detection=entity.date_detection,
+                vehicle_license_plate=entity.vehicle_license_plate,
+                vehicle_license_plate_score=entity.vehicle_license_plate_score,
+                vehicle_license_plate_score_characters=entity.vehicle_license_plate_score_characters,
+                vehicle_direction=entity.vehicle_direction,
+                vehicle_type=entity.vehicle_type,
+                vehicle_type_score=entity.vehicle_type_score,
+                vehicle_color=entity.vehicle_color,
+                vehicle_orientation=entity.vehicle_orientation,
+                vehicle_make=entity.vehicle_make,
+                vehicle_license_plate_coordinates=entity.vehicle_license_plate_coordinates,
+                vehicle_orientation_score=entity.vehicle_orientation_score,
+                vehicle_coordinates=entity.vehicle_coordinates,
+                vehicle_number=entity.vehicle_number
+            )
+            con.execute(stmt_4)
+            self.logger.info(self.log_prefix + "SQL Connector - Successful insert.")
+            result = True
+        except Exception as ex:
+            result = False
+            self.logger.error(self.log_prefix + "SQL Connector - Could not insert predictions. Exception:" + str(ex))
+        return result
+
+    def delete_camera_events(self, device_source_id, event_identifier="all"):
         """ delete camera detection records """
         with self.engine.connect() as con:
-            query = "DELETE FROM camera_event_detection WHERE device_source_id = '{}';".format(device_source_id)
-            con.execute(query)
-            query = "DELETE FROM camera_event_images WHERE device_source_id = '{}';".format(device_source_id)
-            con.execute(query)
-            query = "DELETE FROM camera_event_vehicle_attributes WHERE device_source_id = '{}';".format(device_source_id)
-            con.execute(query)
+            if event_identifier == "all":
+                query_ced = "DELETE FROM camera_event_detection WHERE device_source_id = '{}';".format(device_source_id)
+                query_cei = "DELETE FROM camera_event_images WHERE device_source_id = '{}';".format(device_source_id)
+                query_ceva = "DELETE FROM camera_event_vehicle_attributes WHERE device_source_id = '{}';".format(device_source_id)
+                query_ip = "DELETE FROM image_predictions WHERE image_name IN (SELECT DISTINCT(image_name) FROM camera_event_images WHERE device_source_id = '{}';".format(device_source_id)
+            else:
+                query_ced = "DELETE FROM camera_event_detection WHERE event_identifier = '{}';".format(event_identifier)
+                query_cei = "DELETE FROM camera_event_images WHERE event_identifier = '{}';".format(event_identifier)
+                query_ceva = "DELETE FROM camera_event_vehicle_attributes WHERE event_identifier = '{}';".format(event_identifier)
+                query_ip = "DELETE FROM image_predictions WHERE image_name IN (SELECT DISTINCT(image_name) FROM camera_event_images WHERE event_identifier = '{}';".format(
+                    event_identifier)
+
+            con.execute(query_ced)
+            con.execute(query_cei)
+            con.execute(query_ceva)
+            con.execute(query_ip)
 
     def get_devices(self):
         """ Get IoT devices used by Tolveet client (e.g. cameras, sensors, etc.) """
@@ -220,41 +266,50 @@ class SqlServerConnector:
 
     def write_table_from_dataframe(self, df, table_name, schema='dbo', if_exists='append'):
         """Write dataframe df to table table_name"""
-
-        self.logger.info(f'SQL Connector - Writing {table_name} table...')
-
-        if len(df):
-            self.logger.warning(f'SQL Connector - Empty Dataframe.')
-        # convert datetime to expected format our driver wants
-        for col in df.select_dtypes(include=['datetime']).columns:
-            df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        self._write_table(data=df, table=table_name, schema=schema, if_exists=if_exists)
-        self.logger.info(f'SQL Connector - Insert Complete.')
+        try:
+            self.logger.info(self.log_prefix + f'SQL Connector - Writing {table_name} table...')
+            if len(df) == 0:
+                self.logger.warning(self.log_prefix + f'SQL Connector - Empty Dataframe.')
+            # convert datetime to expected format our driver wants
+            for col in df.select_dtypes(include=['datetime']).columns:
+                df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+            self._write_table(data=df, table=table_name, schema=schema, if_exists=if_exists)
+            self.logger.info(self.log_prefix + f'SQL Connector - Insert Complete.')
+            return True
+        except Exception as ex:
+            self.logger.warning(
+                self.log_prefix + "SQL Connector - Could not write dataframe. Exception:" + str(ex))
+            return False
 
     def _write_table(self, data, table, schema, if_exists='append', chunksize=100000):
-        if if_exists == "truncate":
-            self.logger.info(f'SQL Connector - Truncating first...')
-            self._truncate_table(table, schema)
-        self.logger.info(f'SQL Connector - Inserting Data...')
-        data.to_sql(table, con=self.engine, schema=schema, if_exists='append',
-                    index=False, method='multi', chunksize=chunksize)
+        try:
+            if if_exists == "truncate":
+                self.logger.info(self.log_prefix + f'SQL Connector - Truncating first...')
+                self._truncate_table(table, schema)
+            self.logger.info(self.log_prefix + f'SQL Connector - Inserting Data...')
+            data.to_sql(table, con=self.engine, schema=schema, if_exists='append',
+                        index=False, method='multi', chunksize=chunksize)
+            return True
+        except Exception as ex:
+            self.logger.warning(
+                self.log_prefix + "SQL Connector - Could not write dataframe. Exception:" + str(ex))
+            return False
 
     def _truncate_table(self, table, schema):
         try:
             query = f'TRUNCATE TABLE {schema}.{table};'
             self._execute_command(query)
         except:
-            self.logger.warning("SQL Connector - Could not TRUNCATE table.")
+            self.logger.warning(self.log_prefix + "SQL Connector - Could not TRUNCATE table.")
         # except Exception as ex:
         #     self.logger.warning("Could not truncate table. Exception:" + str(ex))
             try:
-                self.logger.warning("SQL Connector - Trying DELETE FROM instead...")
+                self.logger.warning(self.log_prefix + "SQL Connector - Trying DELETE FROM instead...")
                 query = f'DELETE FROM {schema}.{table};'
                 self._execute_command(query)
-                self.logger.warning("SQL Connector - DELETE was successful.")
+                self.logger.warning(self.log_prefix + "SQL Connector - DELETE was successful.")
             except Exception as ex:
-                self.logger.warning("SQL Connector - Could not delete records from table. Exception:" + str(ex))
+                self.logger.warning(self.log_prefix + "SQL Connector - Could not delete records from table. Exception:" + str(ex))
 
 
     def _clear_table(self, table, schema, add_conditions=None):
