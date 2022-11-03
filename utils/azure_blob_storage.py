@@ -157,7 +157,7 @@ class AzureBlogStorage:
             self.logger.info(self.log_prefix + 'Azure Blob Storage - File already exist.')
             return True
         except Exception as e:
-            self.logger.warning(self.log_prefix + 'Azure Blob Storage - File DOES NOT exist.')
+            self.logger.info(self.log_prefix + 'Azure Blob Storage - File DOES NOT exist.')
             return False
 
     def upload_to_file_share(self, file_path_origin, share_name, file_path_destination):
