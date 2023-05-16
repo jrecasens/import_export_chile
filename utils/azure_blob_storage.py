@@ -1,7 +1,8 @@
+
 try:
     import config
 except ImportError:
-    from . import config
+    from app.connectors import config
 
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from azure.storage.fileshare import ShareFileClient
@@ -12,10 +13,12 @@ import pathlib
 class AzureBlogStorage:
     """Connector to interact with Azure Blog Storage """
 
-    def __init__(self, conn_str, log_prefix=''):
-        # Configure Tolveet Logger
-        TL = config.TolveetLogger()
-        self.logger = TL.get_tolveet_logger()
+    # Class attributes (shared across objects)
+    # Configure Logger
+    TL = config.TolveetLogger()
+    logger = TL.get_tolveet_logger()
+
+    def __init__(self, conn_str, log_prefix):
         self.service_client = self._create_service_client(conn_str)
         self.log_prefix = log_prefix
 
@@ -24,11 +27,11 @@ class AzureBlogStorage:
         try:
             azure_blob_service_client = BlobServiceClient.from_connection_string(conn_str)
         except Exception as ex:
-            self.logger.error(self.log_prefix + "Azure Blob Storage - Exception:" + str(ex))
+            AzureBlogStorage.logger.error(self.log_prefix + "Azure Blob Storage - Exception:" + str(ex))
         return azure_blob_service_client
 
     def image_upload(self, container, image_name, image_file=None, upload_file_path=None, des_folder="",
-                     is_remove=True):
+                     is_remove=True, verbose=True):
         """ Upload image to azure and retrieve URL
         - container: Azure Storage Container destination (required)
         - image_name: name of the image (required)
@@ -51,21 +54,24 @@ class AzureBlogStorage:
         if upload_file_path is None:
             upload_file_path = os.path.join(pathlib.Path().resolve(), image_name)
         if image_file is not None:
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Temporary local storage of " + image_name)
+            if verbose:
+                AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Temporary local storage of " + image_name)
             # Set path to file
             image_file.save(upload_file_path, quality=95)
 
         try:
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Uploading blob: " + image_name)
+            if verbose:
+                AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Uploading blob: " + image_name)
             image_content_setting = ContentSettings(content_type='image/jpeg')
             with open(upload_file_path, "rb") as data:
                 azure_blob_client.upload_blob(data, overwrite=True, content_settings=image_content_setting)
             if is_remove:
                 os.remove(upload_file_path)
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Successful upload.")
+            if verbose:
+                AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Successful upload.")
             return azure_blob_client.url
         except Exception as ex:
-            self.logger.error(self.log_prefix + "Azure Blob Storage - Error uploading. Exception:" + str(ex))
+            AzureBlogStorage.logger.error(self.log_prefix + "Azure Blob Storage - Error uploading. Exception:" + str(ex))
             return 'Not applicable'
 
     def file_upload(self, container, file_name, file_path=pathlib.Path().resolve(), file=None, des_folder=""):
@@ -77,7 +83,7 @@ class AzureBlogStorage:
                 file_name = file_name + '.pkl'
                 local_file_path = os.path.join(file_path, file_name)
             # Save to file system
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Temporary local storage of " + file_name)
+            AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Temporary local storage of " + file_name)
             file.to_pickle(local_file_path)
 
         # Create a blob client using the local file name as the name for the blob
@@ -86,18 +92,18 @@ class AzureBlogStorage:
         azure_blob_client = self.service_client.get_blob_client(container=container, blob=des_folder + file_name)
 
         try:
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Uploading blob: " + file_name)
+            AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Uploading blob: " + file_name)
             with open(local_file_path, "rb") as data:
                 azure_blob_client.upload_blob(data, overwrite=True)
             os.remove(local_file_path)
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Successful upload.")
+            AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Successful upload.")
             return azure_blob_client.url
         except Exception as ex:
-            self.logger.error(self.log_prefix + "Azure Blob Storage - Error uploading. Exception:" + str(ex))
+            AzureBlogStorage.logger.error(self.log_prefix + "Azure Blob Storage - Error uploading. Exception:" + str(ex))
             return 'Not applicable'
 
     def delete_file(self, container, blob_name):
-        self.logger.info(self.log_prefix + "Azure Blob Storage - Removing blob: " + str(blob_name))
+        AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Removing blob: " + str(blob_name))
         # Instantiate a new ContainerClient
         container_client = self.service_client.get_container_client(container=container)
         try:
@@ -105,12 +111,12 @@ class AzureBlogStorage:
             blob_client = container_client.get_blob_client(blob_name)
             # Delete Page Blob
             blob_client.delete_blob()
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Successful delete.")
+            AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Successful delete.")
         except Exception as ex:
-            self.logger.error(self.log_prefix + "Azure Blob Storage - Could not delete blob. Exception:" + str(ex))
+            AzureBlogStorage.logger.error(self.log_prefix + "Azure Blob Storage - Could not delete blob. Exception:" + str(ex))
 
     def delete_files_in_path(self, container, blob_list):
-        self.logger.info(self.log_prefix + "Azure Blob Storage - Removing blobs...")
+        AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Removing blobs...")
         # Instantiate a new ContainerClient
         container_client = self.service_client.get_container_client(container=container)
         try:
@@ -121,9 +127,9 @@ class AzureBlogStorage:
                                    range((len(blob_list) + 256 - 1) // 256)]
             for chunk in blob_list_in_chunks:
                 container_client.delete_blobs(*chunk)
-            self.logger.info(self.log_prefix + "Azure Blob Storage - Successful delete.")
+            AzureBlogStorage.logger.info(self.log_prefix + "Azure Blob Storage - Successful delete.")
         except Exception as ex:
-            self.logger.error(self.log_prefix + "Azure Blob Storage - Could not delete. Exception:" + str(ex))
+            AzureBlogStorage.logger.error(self.log_prefix + "Azure Blob Storage - Could not delete. Exception:" + str(ex))
 
     def list_files(self, container, folder=None, is_only_blob_name=True, extensions=['']):
         blobfile = []
@@ -154,10 +160,10 @@ class AzureBlogStorage:
     def is_file_exist(self, container, folder, file):
         try:
             self.service_client.get_blob_properties(container, folder + '/' + file)
-            self.logger.info(self.log_prefix + 'Azure Blob Storage - File already exist.')
+            AzureBlogStorage.logger.info(self.log_prefix + 'Azure Blob Storage - File already exist.')
             return True
         except Exception as e:
-            self.logger.info(self.log_prefix + 'Azure Blob Storage - File DOES NOT exist.')
+            # AzureBlogStorage.logger.info(self.log_prefix + 'Azure Blob Storage - File DOES NOT exist.')
             return False
 
     def upload_to_file_share(self, file_path_origin, share_name, file_path_destination):
@@ -183,11 +189,11 @@ class AzureBlogStorage:
             if props.copy.status != "success":
                 copied_blob.abort_copy(copy_id)
                 status = False
-            self.logger.info(self.log_prefix + 'Azure Blob Storage - Copy Status: ' + props.copy.status +
+            AzureBlogStorage.logger.info(self.log_prefix + 'Azure Blob Storage - Copy Status: ' + props.copy.status +
                              '. New Blob Name: ' + destination_blob)
             return source_blob_url, status
         except Exception as e:
-            self.logger.warning(self.log_prefix + 'Azure Blob Storage - Copy Status: Exception. '
+            AzureBlogStorage.logger.warning(self.log_prefix + 'Azure Blob Storage - Copy Status: Exception. '
                                                   '. New Blob Name: ' + destination_blob + '. Exception Message: ' +
                                 str(e).partition('\n')[0])
             return source_blob_url, False

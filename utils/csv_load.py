@@ -13,7 +13,7 @@ TL = TolveetLogger()
 logger = TL.get_tolveet_logger()
 
 def get_headers(headers_files):
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
     logger.info("Importing Headers...")
     for f in headers_files:
         if "din" in f:
@@ -42,7 +42,7 @@ def get_headers(headers_files):
 
 def get_import_export(import_files, export_files, is_init=False):
 
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
     # Check whether the specified path exists or not
     if not os.path.exists(temp_folder):
         # Create a new directory because it does not exist
@@ -90,13 +90,14 @@ def get_import_export(import_files, export_files, is_init=False):
             with open(f_path, 'rt', encoding='utf-8') as fileObject:
                 temp_txt = StringIO(fileObject.read())
                 df_temp = pd.read_csv(temp_txt, sep=";", header=None, low_memory=False)
-            logger.info("Appending files..." + i)
+            logger.info("Appending file: " + i)
             if i.startswith('Export'):
                 exports = pd.concat([exports, df_temp], ignore_index=True, sort=False)
             else:
                 imports = pd.concat([imports, df_temp], ignore_index=True, sort=False)
             del df_temp
-        logger.info("Appending Complete for " + ",".join(f))
+            logger.info("Append complete.")
+        logger.info("Appending Complete for files: " + ",".join(f))
 
     logger.info("Created Import file with " + str(len(imports.index)) + " rows")
     logger.info("Created Export file with " + str(len(exports.index)) + " rows")
@@ -137,21 +138,32 @@ def set_headers(imports, exports, import_headers, export_headers):
 
 def get_years_month_to_load(trade_data):
     dfs = []
+
     for trade_table in trade_data:
+
         name = trade_table.name
+
         trade_table.columns = trade_table.columns.str.replace(' ', '')
+
         # Subset columns. Only extract what is needed.
-        df = trade_table[['period_id']].copy()
-        df['trade_type'] = name
-        df_g = df.groupby(['trade_type', 'period_id']).agg(
-            num_records=pd.NamedAgg(column='period_id', aggfunc=pd.Series.count)
-        ).reset_index()
-        df_g["num_records"] = df_g["num_records"].astype("Int64")
-        try:
-            dfs.append(df_g)
-        except Exception as e:
-            logger.warning("Could not append " + name)
-            logger.warning(str(e))
+
+        if len(trade_table) > 0:
+            df = trade_table[['period_id']].copy()
+
+            df['trade_type'] = name
+
+            df_g = df.groupby(['trade_type', 'period_id']).agg(
+                num_records=pd.NamedAgg(column='period_id', aggfunc=pd.Series.count)
+            ).reset_index()
+
+            df_g["num_records"] = df_g["num_records"].astype("Int64")
+
+            try:
+                dfs.append(df_g)
+            except Exception as e:
+                logger.warning("Could not append " + name)
+                logger.warning(str(e))
+
 
     if len(dfs) > 1:
         try:
@@ -182,6 +194,8 @@ def load_trade_files(files_to_load, is_init):
         imports['period_id'] = imports.apply(lambda row: str(row['fecha'].year) + "-" + str(row['fecha'].month), axis=1)
         imports['reference_id'] = imports.apply(
             lambda row: str(row['NUMENCRIPTADO'] or 'Unknown') + "-" + str(row['NUMITEM' or 'Unknown']), axis=1)
+        imports[['MEDIDA']] = imports[['MEDIDA']].fillna(value=999)
+        imports[['MEDIDA']] = imports[['MEDIDA']].round().astype(int)
 
     if len(exports) != 0:
         logger.info("Exports: Adding new columns fecha, period_id and reference_id... ")
@@ -201,6 +215,8 @@ def load_trade_files(files_to_load, is_init):
             lambda row: str(row['NUMEROIDENT'] or 'Unknown') + "-" + str(row['NUMEROITEM' or 'Unknown']), axis=1)
         # Remove from ADUANA all non integer
         exports = exports[exports.ADUANA.astype(str).str.isnumeric()]
+
+    logger.info("New Columns added ")
 
     imports.name = "imports"
     exports.name = "exports"

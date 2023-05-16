@@ -3,8 +3,8 @@ from dotenv import load_dotenv
 import logging
 from logging import Formatter
 from pytz import timezone
-import urllib
-
+from urllib import parse
+from tzlocal.windows_tz import win_tz
 MAIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Get environment variables
@@ -29,27 +29,45 @@ class Config:
     FOLDER_CURRENCY = "currency"
     FOLDER_IMPORTS_EXPORTS = "imports_exports"
 
-    AZURE_SQL_SERVER = os.getenv('AZURE_SQL_SERVER')
-    AZURE_SQL_DB_NAME = os.getenv('AZURE_SQL_DB_NAME')
-    AZURE_SQL_DB_USER = os.getenv('AZURE_SQL_DB_USER')
-    AZURE_SQL_DB_PWD = os.getenv('AZURE_SQL_DB_PWD')
-    AZURE_SQL_DRIVER = os.getenv('AZURE_SQL_DRIVER')
+    CURRENCY_FORECAST_HORIZON = 730 # days
 
     # Azure Storage
     AZURE_STORAGE_CONNECT_STR = os.getenv('AZURE_STORAGE_CONNECT_STR')
+    database = {'database':
+                        {
+                            "AZURE_SQL_SERVER": os.getenv('AZURE_SQL_SERVER'),
+                            "AZURE_SQL_DB_NAME": os.getenv('AZURE_SQL_DB_NAME'),
+                            "AZURE_SQL_DB_USER": os.getenv('AZURE_SQL_DB_USER'),
+                            "AZURE_SQL_DB_PWD": os.getenv('AZURE_SQL_DB_PWD'),
+                            "AZURE_SQL_DRIVER": os.getenv('AZURE_SQL_DRIVER')
+                        }
+    }
 
-    SQLALCHEMY_DATABASE_URI = 'mssql+pyodbc:///?odbc_connect={}'.format(
-                urllib.parse.quote_plus(r'Driver=' + AZURE_SQL_DRIVER + ';'
-                r'Server=' + AZURE_SQL_SERVER + ';'
-                r'Database=' + AZURE_SQL_DB_NAME + ';'
-                r'Uid=' + AZURE_SQL_DB_USER + ';'
-                r'Pwd=' + AZURE_SQL_DB_PWD + ';'
-                r'Encrypt=yes;'
-                r'TrustServerCertificate=yes;'
-                r'Connection Timeout=30;')
-    )
+    # SQL Alchemy
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ECHO = False
+    FAST_EXECUTEMANY = True
+    SQLALCHEMY_POOL_RECYCLE = 300
+    SQLALCHEMY_POOL_TIMEOUT = 300
+    SQLALCHEMY_POOL_SIZE = 10
+    SQLALCHEMY_MAX_OVERFLOW = 0
+    SQLALCHEMY_POOL_PRE_PING = True
 
+    # Unknown member default. Replaced with camera_param_dict value.
+    UNKNOWN_MEMBER = 'Unknown'
 
+    TEMP_FOLDER = 'zemp'
+
+    # Internationalization (python i18n) and localization (python l10n)
+    LANGUAGES = ['en', 'es']
+    TIME_ZONE_BACKEND_WINDOWS = "Eastern Standard Time"
+    TIME_ZONE_BACKEND_TZ = win_tz[TIME_ZONE_BACKEND_WINDOWS]
+    TIME_ZONE_FRONTEND_WINDOWS = TIME_ZONE_BACKEND_WINDOWS
+    TIME_ZONE_FRONTEND_TZ = TIME_ZONE_BACKEND_TZ
+    DATE_FORMAT = '%Y-%m-%d'
+    TIME_FORMAT = '%Y-%m-%d %H:%M:%S %z'
+    TIME_FORMAT_NO_TZ = '%Y-%m-%d %H:%M:%S'
+    TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%S%z'
 
 class ProdConfig(Config):
     FLASK_ENV = 'production'

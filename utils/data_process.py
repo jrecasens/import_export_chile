@@ -6,6 +6,7 @@ import time
 from datetime import timedelta
 import shutil
 from decimal import *
+from datetime import datetime
 
 # Configure Tolveet Logger
 from config import TolveetLogger, Config, MAIN_DIR
@@ -13,13 +14,13 @@ TL = TolveetLogger()
 logger = TL.get_tolveet_logger()
 
 
-def get_folders():
+def get_folders(temp_folder):
     project_folder = os.path.join(MAIN_DIR, Config.FOLDER_DATA, Config.FOLDER_TRADE)
     columns_folder = os.path.join(project_folder, Config.FOLDER_COLUMNS)
     dimensions_folder = os.path.join(project_folder, Config.FOLDER_DIMENSIONS)
     currency_folder = os.path.join(project_folder, Config.FOLDER_CURRENCY)
     trade_folder = os.path.join(project_folder, Config.FOLDER_IMPORTS_EXPORTS)
-    temp_folder = os.path.join(trade_folder, "temp")
+    temp_folder = os.path.join(trade_folder, temp_folder)
     return project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder
 
 def get_years_month_loaded(conn, schema_name):
@@ -49,7 +50,7 @@ def get_years_month_loaded(conn, schema_name):
 
 def get_files_to_load(is_sample=False):
     """ Read project files to load """
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
 
     output = {}
     import_files = []
@@ -122,9 +123,40 @@ def get_files_to_load(is_sample=False):
 
     return output
 
+
+def load_only_last_year(files_to_load):
+    files_available_df = pd.DataFrame()
+    files_available_df['trade_type'] = None
+    files_available_df['zip_file_name'] = None
+    files_available_df['year'] = None
+
+    i = 0
+    for s in files_to_load['import_files'] + files_to_load['export_files']:
+        # Get trade_type
+        files_available_df.loc[i, 'trade_type'] = s.split('_', 1)[0]
+
+        # zip file name
+        files_available_df.loc[i, 'zip_file_name'] = s
+
+        # Get year
+        temp = s.split('_', 1)[1]
+        temp = temp.split('_', 1)[0]
+        files_available_df.loc[i, 'year'] = temp
+
+        i = i + 1
+
+    # get max available year (applicable to both imports and exports)
+    files_available_df['is_delete'] = files_available_df['year'] != files_available_df['year'].max()
+    files_to_ignore = files_available_df[files_available_df['is_delete']]['zip_file_name'].to_list()
+
+    files_to_load['import_files'] = [file for file in files_to_load['import_files'] if file not in files_to_ignore]
+    files_to_load['export_files'] = [file for file in files_to_load['export_files'] if file not in files_to_ignore]
+
+    return files_to_load
+
 def get_dimensions(dimension_files):
     """ Load dimensions """
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
     logger.info("Reading dimensions...")
     dimension_list_name = []
     dimension_list_data = []
@@ -138,14 +170,15 @@ def get_dimensions(dimension_files):
             df_temp.name = name
         logger.info("Appending files...")
         dimension_list_data.append(df_temp)
+
     dimensions_dict = dict(zip(dimension_list_name, dimension_list_data))
     logger.info("Appending Complete.")
 
     return dimensions_dict
 
-def get_currency(currency_files, currencies_of_interest):
+def get_currency(currency_files):
     """ Load dimensions """
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
     logger.info("Reading currencies...")
     # currency_list_name = []
     currency_df = pd.DataFrame()
@@ -166,9 +199,17 @@ def get_currency(currency_files, currencies_of_interest):
 
     # generate daily forecast (naive method).
     date_from = currency_df["currency_date"].max()
-    date_to = date_from + timedelta(days=365)
 
-    for f in currencies_of_interest:
+    # Import data comes with a 45 day delay.
+    date_today = datetime.now() - timedelta(days=45)
+    if ( date_from <= date_today ):
+        logger.warning("Generating Naive Forecasts for currencies.")
+        date_to = date_from + timedelta(days=Config.CURRENCY_FORECAST_HORIZON)
+    else:
+        logger.info("Forecast of 30 days generated.")
+        date_to = date_from + timedelta(days=30)
+
+    for f in Config.CURRENCIES:
         currency_forecast = pd.DataFrame({
             'currency_code': f,
             'currency_date': pd.date_range(date_from, date_to, freq='D'),
@@ -182,7 +223,7 @@ def get_currency(currency_files, currencies_of_interest):
     currency_df = currency_df.groupby(['currency_code', pd.Grouper(key='currency_date', freq='D')])['to_clp'].mean().ffill().reset_index()
 
     # add conversion to USD
-    for c in currencies_of_interest:
+    for c in Config.CURRENCIES:
         currency_df_temp = currency_df[currency_df.currency_code == c][['currency_date', 'to_clp']]
         currency_df = pd.merge(currency_df, currency_df_temp, on="currency_date", suffixes=("_l", "_r"))
         currency_df['to_' + c] = currency_df.apply(lambda row: row.to_clp_l / row.to_clp_r, axis=1)
@@ -196,21 +237,25 @@ def get_currency(currency_files, currencies_of_interest):
 
     return currency_df
 
-def generate_temp_csv(imports, exports):
+def generate_temp_csv(imports, exports, schema_name):
     """ Save dataframe to .csv"""
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
+
+    os.makedirs(temp_folder, exist_ok=True)
 
     # csv GENERATION
     logger.info("Removing Imports and Exports if they exist....")
-    for f in ["imports.csv", "exports.csv"]:
+    for f in [schema_name+".imports.csv", schema_name+".exports.csv"]:
         if os.path.exists(os.path.join(temp_folder, f)):
             logger.info("File " + f + " exist. Removing...")
             os.remove(os.path.join(temp_folder, f))
 
     logger.info("Saving Imports and Exports as .csv....")
     time.sleep(1)
-    imports.to_csv(os.path.join(temp_folder, "imports.csv"), index=False, sep=";", header=False)
-    exports.to_csv(os.path.join(temp_folder, "exports.csv"), index=False, sep=";", header=False)
+    if len(imports) > 0:
+        imports.to_csv(os.path.join(temp_folder, schema_name+".imports.csv"), index=False, sep=";", header=False)
+    if len(exports) > 0:
+        exports.to_csv(os.path.join(temp_folder, schema_name+".exports.csv"), index=False, sep=";", header=False)
     logger.info(".csv saved.")
 
 
@@ -223,19 +268,19 @@ def col_to_str(df_dict):
 
 def drop_db_objects(conn, raw_connection, tables_to_drop, schema_name, sql_drop_commands):
     logger.info("Dropping objects created in query...")
-    conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=sql_drop_commands, debug=False)
+    conn.execute_sql_batch(logger, log_prefix='', raw_connection=raw_connection, query_parsed=sql_drop_commands, debug=False)
 
     try:
         logger.info("Dropping tables...")
         for t in tables_to_drop:
-            conn.execute_sql_batch(raw_connection=raw_connection,
-                                   queryParsed=["DROP TABLE IF EXISTS "+schema_name+"." + t], debug=False)
+            conn.execute_sql_batch(logger, log_prefix='', raw_connection=raw_connection,
+                                   query_parsed=["DROP TABLE IF EXISTS "+schema_name+"." + t], debug=False)
     except Exception as e:
         logger.error("Error: %s" % e)
     for t in ['DROP SCHEMA  IF EXISTS '+schema_name, 'CREATE SCHEMA '+schema_name]:
-        conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=[t], debug=False)
+        conn.execute_sql_batch(logger, log_prefix='', raw_connection=raw_connection, query_parsed=[t], debug=False)
 
-def recreate_db(conn, raw_connection, imports,exports,dimensions_dict, currency_converter, schema_name, sql_init_commands):
+def recreate_db(conn, raw_connection, imports, exports,dimensions_dict, currency_converter, schema_name, sql_init_commands, if_exists='append'):
 
     try:
         for df in [imports, exports, currency_converter]:
@@ -244,7 +289,7 @@ def recreate_db(conn, raw_connection, imports,exports,dimensions_dict, currency_
             all_columns = list(df_head)  # Creates list of all column headers
             df_head[all_columns] = df_head[all_columns].astype(str)
             # logger.info(df_head.head(0))
-            conn.write_table_from_dataframe(df=df_head.head(0), table_name=df.name, schema=schema_name, if_exists='truncate')
+            conn.write_table_from_dataframe(df=df_head.head(0), table_name=df.name, schema=schema_name, if_exists=if_exists)
         logger.info("DB schema created for imports and exports.")
 
         for df in list(dimensions_dict.values()):
@@ -252,44 +297,73 @@ def recreate_db(conn, raw_connection, imports,exports,dimensions_dict, currency_
             df_head = df.head(10).copy()
             df_head.iloc[:, 0] = df_head.iloc[:, 0].astype(int)
             # logger.info(df_head.head(0))
-            conn.write_table_from_dataframe(df=df_head.head(0), table_name=df.name, schema=schema_name, if_exists='truncate')
+            conn.write_table_from_dataframe(df=df_head.head(0), table_name=df.name, schema=schema_name, if_exists=if_exists)
         logger.info("DB schema created for dimensions.")
     except Exception as e:
         logger.error("Error: %s" % e)
 
     logger.info("Running initialization SQL commands...")
-    conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=sql_init_commands, debug=False)
+    conn.execute_sql_batch(logger, log_prefix='', raw_connection=raw_connection, query_parsed=sql_init_commands, debug=False)
 
-def copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter=None, dimensions_dict=None, remove_tmp=True):
+def copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter=None, dimensions_dict=None, is_remove_tmp=True):
 
-    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders()
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
 
     ## Copy dimensions
     logger.info("Copying dimensions....")
     for k, v in dimensions_dict.items():
         # Truncate dimensions first (to prevent duplication).
         conn._truncate_table(table=k, schema=schema_name)
-        conn.copy_from_file(raw_connection=raw_connection, schema=schema_name, df=v, table_name=k, path_csv=temp_folder)
+        conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=v, table_name=k, path_to_csv=temp_folder)
 
     ## Copy currencies
     logger.info("Copying currencies....")
     # Truncate first (to prevent duplication).
     conn._truncate_table(table=currency_converter.name, schema=schema_name)
-    conn.copy_from_file(raw_connection=raw_connection, schema=schema_name, df=currency_converter, table_name=currency_converter.name, path_csv=temp_folder)
+    conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=currency_converter, table_name=currency_converter.name, path_to_csv=temp_folder)
 
     ## Copy imports and exports
     if len(imports) != 0:
         logger.info("Copying imports to DB....")
-        conn.copy_from_file(raw_connection=raw_connection, schema=schema_name, df=imports, table_name=imports.name, path_csv=temp_folder)
+        conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=imports, table_name=imports.name, path_to_csv=temp_folder)
         logger.info("Copy imports to DB complete. ")
     else:
-        logger.info("No imports to load to DB. ")
+        logger.warning("No imports to load to DB. ")
+
     if len(exports) != 0:
         logger.info("Copying exports to DB....")
-        conn.copy_from_file(raw_connection=raw_connection, schema=schema_name, df=exports, table_name=exports.name, path_csv=temp_folder)
+        conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=exports, table_name=exports.name, path_to_csv=temp_folder)
         logger.info("Copy exports to DB complete. ")
     else:
-        logger.info("No exports to load to DB. ")
+        logger.warning("No exports to load to DB. ")
 
-    if remove_tmp:
+    if is_remove_tmp:
         shutil.rmtree(temp_folder)
+
+def check_for_incomplete_periods(incremental_loads, trade_type, schema_name, conn, raw_connection):
+    # Select years and months with a missmatch (in number of records) compared to what has been loaded.
+    periods_to_delete = incremental_loads[(~incremental_loads['num_records_x'].isnull()) &
+                                          (~incremental_loads['num_records_y'].isnull()) &
+                                          (incremental_loads['num_records_x'] != incremental_loads['num_records_y'])]
+
+    periods_to_delete_dict = {}
+    for t in trade_type:
+        df = periods_to_delete[periods_to_delete["trade_type"] == t]
+        periods = []
+        for index, row in df.iterrows():
+            periods.append(row['period_id'])
+        periods_to_delete_dict[t] = periods
+
+    logger.info("periods_to_delete_dict:")
+    logger.info(periods_to_delete_dict)
+
+    # DELETE: Remove records from DB
+    for t in trade_type:
+        if len(periods_to_delete_dict[t]) != 0:
+            lst = periods_to_delete_dict[t]
+            lst_str = "('{0}".format("', '".join(lst)) + "')"
+            query = "DELETE FROM {0}.{1} " \
+                    "WHERE period_id IN {2};".format(schema_name, t, lst_str)
+            conn.execute_sql_batch(logger=logger, log_prefix='', raw_connection=raw_connection, query_parsed=[query],
+                                   debug=True)
+    return periods_to_delete_dict

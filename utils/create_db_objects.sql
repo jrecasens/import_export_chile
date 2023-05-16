@@ -1,3 +1,8 @@
+
+
+
+
+
 -- -- -- -- -- -- -- -- -- -- -- --  
 -- -- -- I M P O R T S -- -- -- -- 
 -- -- -- -- -- -- -- -- -- -- -- -- 
@@ -19,7 +24,13 @@ DROP INDEX IF EXISTS index_imports_VIA_TRAN ON canola.imports;
 DROP INDEX IF EXISTS index_imports_MEDIDA ON canola.imports;
 
 DROP TABLE IF EXISTS [canola].[imports_raw];
-DROP VIEW IF EXISTS [canola].[vw_imports_canola_trigo];
+
+
+
+DROP VIEW IF EXISTS [canola].[canola.vw_imports_canola_report];
+DROP VIEW IF EXISTS [canola].[canola.vw_imports_canola_trigo];
+
+
 DROP FUNCTION IF EXISTS [canola].[RemoveNonAlphaCharacters];
 
 UPDATE canola.imports SET fecha=CONVERT(CHAR(10),fecha,120);
@@ -87,7 +98,9 @@ DROP INDEX IF EXISTS index_exports_VIATRANSPORTE ON canola.exports;
 DROP INDEX IF EXISTS index_exports_UNIDADMEDIDA ON canola.exports;
 
 DROP TABLE IF EXISTS [canola].[exports_raw];
-DROP VIEW IF EXISTS [canola].[vw_exports_canola_trigo];
+
+DROP VIEW IF EXISTS [canola].[canola.vw_exports_canola_report];
+DROP VIEW IF EXISTS [canola].[canola.vw_exports_canola_trigo];
 
 UPDATE canola.exports SET fecha=CONVERT(CHAR(10),fecha,120);
 

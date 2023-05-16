@@ -1,9 +1,12 @@
+
+import re
 import os.path
 import time
 from utils.data_process import get_years_month_loaded, get_files_to_load, get_dimensions, col_to_str, \
-    recreate_db, copy_csv_into_db, generate_temp_csv, drop_db_objects, get_currency
+    recreate_db, copy_csv_into_db, generate_temp_csv, drop_db_objects, get_currency, get_folders, load_only_last_year, \
+    check_for_incomplete_periods
 from utils.csv_load import load_trade_files
-from utils.sql_server_connector import SqlServerConnector
+from utils.sql_server_connector import SqlServerConnector, sqlalchemy_db_uri
 from utils.azure_blob_storage import AzureBlogStorage
 from utils.plot_functions import aggregate_canola_imports, generate_missing_dates, create_imports_canola_plot
 
@@ -19,8 +22,9 @@ from plotly.utils import PlotlyJSONEncoder
 from json import dumps
 import pickle
 import urllib.request
-
+import json
 import plotly.io as pio
+from datetime import datetime
 pio.renderers.default = "browser"
 
 TL = TolveetLogger()
@@ -36,7 +40,23 @@ logger = TL.get_tolveet_logger()
 # http://comext.aduana.cl:7001/codigos/
 
 # Currency Exchange rates
-# https://si3.bcentral.cl/Indicadoressiete/secure/IndicadoresDiarios.aspx
+# URL: https://si3.bcentral.cl/Indicadoressiete/secure/IndicadoresDiarios.aspx
+# Instructions:
+# - For each currency click on "Tipos de cambio" -> Ver Serie (Dólar observado , Euro y Otros tipos de cambio nominal)
+# - Download Excel from Indicadores diarios (Inicio / Estadísticas / Indicadores diarios)
+
+### ///// Instructions
+# Create empty DB.
+# CREATE LOGIN XXX
+#     WITH PASSWORD = 'YYY';
+# GO
+
+# Enable SQL Server authentification in the server (security) and restart server.
+
+# Create schema "canola"
+
+# add windows access to folder (NT SERVICE\MSSQLSERVER)
+
 
 ### ///// PARAMETERS
 
@@ -49,6 +69,7 @@ azure_storage_url = "https://tolveetstorage.blob.core.windows.net/other/canolach
 is_init = False
 is_sample = False
 is_execute_queries = True
+is_remove_tmp = True
 start_total = time.time()
 
 ### ///// DB CONNECTORS
@@ -57,11 +78,15 @@ logger.info("////// FILE EXTRACTION AND DATAFRAME APPENDING ///////")
 logger.info("//////////////////////////////////////////////////////")
 
 start_db_connectors = time.time()
-storage = AzureBlogStorage(conn_str=Config.AZURE_STORAGE_CONNECT_STR)
-conn = SqlServerConnector(conn_str=Config.SQLALCHEMY_DATABASE_URI, storage=storage)
+
+storage = AzureBlogStorage(conn_str=Config.AZURE_STORAGE_CONNECT_STR, log_prefix='')
+
+conn_str = sqlalchemy_db_uri(Config.database)
+conn = SqlServerConnector(conn_str=conn_str,
+                          storage=storage,
+                          log_prefix='')
+
 raw_connection = conn.engine.raw_connection()
-
-
 
 # Get year and months that have been loaded
 years_month_loaded = get_years_month_loaded(conn, schema_name)
@@ -87,37 +112,45 @@ dimensions_dict = get_dimensions(files_to_load['dimension_files'])
 col_to_str(dimensions_dict)
 
 # Get currency exchange rates
-currency_converter = get_currency(currency_files=files_to_load['currency_files'],
-                                  currencies_of_interest=Config.CURRENCIES)
+currency_converter = get_currency(currency_files=files_to_load['currency_files'])
+
+# Only consider files from the last year
+files_to_load = load_only_last_year(files_to_load)
 
 # Load trade data from .txt
 years_month_to_load, imports, exports = load_trade_files(files_to_load, is_init)
+
 end_csv_load = time.time() - start_csv_load
 
 if is_init:
     logger.info("///////////////////////////////////")
-    logger.info("/// RECREATE EMPTY DATABASE ///////")
+    logger.info("/// RECREATE EMPTY DATABASE (only use SAMPLE files)///////")
     logger.info("///////////////////////////////////")
 
-    start_init_db = time.time()
+    if is_sample:
+        start_init_db = time.time()
+        tables_to_drop = [imports.name, exports.name, currency_converter.name] + list(dimensions_dict.keys())
+        logger.info("Dropping DB objects...")
+        drop_db_objects(conn, raw_connection, tables_to_drop, schema_name, sql_drop_commands)
+        logger.info("Recreating empty DB...")
+        recreate_db(conn,
+                    raw_connection,
+                    imports,
+                    exports,
+                    dimensions_dict,
+                    currency_converter,
+                    schema_name,
+                    sql_init_commands,
+                    if_exists='append'
+                    )
+        logger.info("/////////// DB CREATION WITH EMPTY SCHEMA IS COMPLETE.")
+        end_init_db = time.time() - start_init_db
+        is_init = False
+    else:
+        logger.error("Use sample data to initialize.")
 
-    tables_to_drop = [imports.name, exports.name, currency_converter.name] + list(dimensions_dict.keys())
-    logger.info("Dropping DB objects...")
-    drop_db_objects(conn, raw_connection, tables_to_drop, schema_name, sql_drop_commands)
-    logger.info("Recreating DB...")
-    recreate_db(conn,
-                raw_connection,
-                imports,
-                exports,
-                dimensions_dict,
-                currency_converter,
-                schema_name,
-                sql_init_commands
-                )
-    logger.info("/////////// DB CREATION WITH EMPTY SCHEMA IS COMPLETE.")
-    end_init_db = time.time() - start_init_db
 
-else:
+if not is_init:
     logger.info("///////////////////////////////////////////////")
     logger.info("//// INCREMENTAL DATA LOADS (per month) ///////")
     logger.info("//////////////////////////////////////////////")
@@ -125,11 +158,8 @@ else:
     start_data_process = time.time()
 
     incremental_loads = years_month_loaded.merge(years_month_to_load, how='outer', on=["trade_type", "period_id"])
-
+    # Select years and months that should be loaded.
     periods_to_load = incremental_loads[(incremental_loads['num_records_x'].isnull())]
-    periods_to_delete = incremental_loads[(~incremental_loads['num_records_x'].isnull()) &
-                                          (~incremental_loads['num_records_y'].isnull()) &
-                                          (incremental_loads['num_records_x'] != incremental_loads['num_records_y'])]
 
     periods_to_load_dict = {}
     for t in trade_type:
@@ -138,57 +168,52 @@ else:
         for index, row in df.iterrows():
             periods.append(row['period_id'])
         periods_to_load_dict[t] = periods
-
-    periods_to_delete_dict = {}
-    for t in trade_type:
-        df = periods_to_delete[periods_to_delete["trade_type"] == t]
-        periods = []
-        for index, row in df.iterrows():
-            periods.append(row['period_id'])
-        periods_to_delete_dict[t] = periods
-
     logger.info("periods_to_load_dict:")
     logger.info(periods_to_load_dict)
 
-    logger.info("periods_to_delete_dict:")
-    logger.info(periods_to_delete_dict)
+    # Some periods may not be complete in the DB, we need to remove them first.
+    periods_to_delete_dict = check_for_incomplete_periods(incremental_loads, trade_type, schema_name, conn, raw_connection)
 
-    # DELETE: Remove records from DB
-    for t in trade_type:
-        if len(periods_to_delete_dict[t]) != 0:
-            lst = periods_to_delete_dict[t]
-            lst_str = "('{0}".format("', '".join(lst))+"')"
-            query = "DELETE FROM {0}.{1} " \
-                    "WHERE period_id IN {2};".format(schema_name, t, lst_str)
-            conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=[query], debug=True)
-
-    # LOAD: Filter imports and exports
-    # Add deleted periods
+    # LOAD: Filter imports and exports. Also Add deleted periods.
     for t in trade_type:
         periods_to_load_dict[t] = periods_to_load_dict[t] + periods_to_delete_dict[t]
 
     # Filter export and import df (select only what needs to be loaded
-    imports = imports[imports.period_id.isin(periods_to_load_dict['imports'])]
-    exports = exports[exports.period_id.isin(periods_to_load_dict['exports'])]
-
+    if len(imports) > 0:
+        imports = imports[imports.period_id.isin(periods_to_load_dict['imports'])]
     imports.name = "imports"
+
+    if len(exports) > 0:
+        exports = exports[exports.period_id.isin(periods_to_load_dict['exports'])]
     exports.name = "exports"
+
     end_data_process = time.time() - start_data_process
 
     start_data_load = time.time()
     logger.info("Loading DF into DB....")
-    generate_temp_csv(imports, exports)
-    copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter, dimensions_dict, remove_tmp=True)
+    generate_temp_csv(imports, exports, schema_name)
+
+    project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
+
+    copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter, dimensions_dict, is_remove_tmp=is_remove_tmp)
     end_data_load = time.time() - start_data_load
 
 if not is_init and is_execute_queries:
-    logger.info("///////////////////////////////////")
-    logger.info("//// SQL REPORTING LAYER /////////")
-    logger.info("///////////////////////////////////")
+    logger.info("/////////////////////////////////////////")
+    logger.info("//// SQL REPORTING VIEWS UPDATE /////////")
+    logger.info("////////////////////////////////////////")
 
     start_sql_report_queries = time.time()
     logger.info("Running SQL Reporting queries...")
-    conn.execute_sql_batch(raw_connection=raw_connection, queryParsed=sql_report_commands, debug=True)
+    conn.execute_sql_batch(logger=logger,
+                           log_prefix='',
+                           raw_connection=raw_connection,
+                           query_parsed=sql_report_commands,
+                           debug=True)
+
+    logger.info("/////////////////////////////////////////")
+    logger.info("//// REPORTS AND PLOTS GENERATION /////////")
+    logger.info("////////////////////////////////////////")
 
     blob_upload_lst = []
     excel_file_lst = []
@@ -243,8 +268,10 @@ if not is_init and is_execute_queries:
     vw_imports_canola_report.loc[:, 'CANT_MERC_MOD'] = (vw_imports_canola_report['CANT_MERC_MOD'] / 100).round(
         0)
 
-    imports_canola_agg = vw_imports_canola_report.groupby(by=['fecha_month', 'pais_nombre_origen'], axis=0,
-                                                          as_index=False).agg(
+    imports_canola_agg = vw_imports_canola_report.groupby(by=['fecha_month', 'pais_nombre_origen'],
+                                                          axis=0,
+                                                          as_index=False,
+                                                          group_keys=False).agg(
         cantidad_quintal=pd.NamedAgg(column='CANT_MERC_MOD', aggfunc=sum),
         precio_fob_usd_quintal=pd.NamedAgg(column='precio_fob_usd', aggfunc=np.mean),
         precio_fob_cad_quintal=pd.NamedAgg(column='precio_fob_cad', aggfunc=np.mean),
@@ -252,25 +279,45 @@ if not is_init and is_execute_queries:
         precio_cif_cad_quintal=pd.NamedAgg(column='precio_cif_cad', aggfunc=np.mean)
     )
 
+
+
     # Aggregate all countries and compute weighted average
     imports_canola_agg_all = aggregate_canola_imports(input_df=imports_canola_agg, country_name='TODOS')
-    imports_canola_agg_canada = imports_canola_agg[imports_canola_agg['pais_nombre_origen'] == 'CANADA']
-    imports_canola_agg_argentina = imports_canola_agg[imports_canola_agg['pais_nombre_origen'] == 'ARGENTINA']
-    imports_canola_agg_otros = imports_canola_agg[
-        ~imports_canola_agg['pais_nombre_origen'].isin(['ARGENTINA', 'CANADA'])]
-    if len(imports_canola_agg_otros) > 0:
-        imports_canola_agg_otros = aggregate_canola_imports(input_df=imports_canola_agg_otros,
-                                                            country_name='OTROS')
-
     # Generate missing timestamps
-    # generate daily forecast (naive method).
     date_from = imports_canola_agg_all["fecha_month"].min()
     date_to = imports_canola_agg_all["fecha_month"].max()
+    # countries with imports
+    countries_with_imports = list(set(imports_canola_agg['pais_nombre_origen']))
 
-    csv_dict = {'imports_canola_agg_all': imports_canola_agg_all,
-                'imports_canola_agg_canada': imports_canola_agg_canada,
-                'imports_canola_agg_argentina': imports_canola_agg_argentina,
-                'imports_canola_agg_otros': imports_canola_agg_otros}
+    # Generate DF by country
+    logger.info("Countries with imports:")
+    logger.info(countries_with_imports)
+
+    csv_dict = {}
+    csv_dict['imports_canola_agg_all'] = imports_canola_agg_all
+
+    imports_countries = []
+    imports_countries.append('all')
+
+    for c in countries_with_imports:
+        country_name = c.lower()
+        imports_canola_agg_country = imports_canola_agg[imports_canola_agg['pais_nombre_origen'] == c]
+        csv_dict['imports_canola_agg_' + country_name] = imports_canola_agg_country
+        imports_countries.append(country_name)
+
+    # imports_canola_agg_canada = imports_canola_agg[imports_canola_agg['pais_nombre_origen'] == 'CANADA']
+    # imports_canola_agg_argentina = imports_canola_agg[imports_canola_agg['pais_nombre_origen'] == 'ARGENTINA']
+
+    # imports_canola_agg_otros = imports_canola_agg[
+    #     ~imports_canola_agg['pais_nombre_origen'].isin(['ARGENTINA', 'CANADA'])]
+    # if len(imports_canola_agg_otros) > 0:
+    #     imports_canola_agg_otros = aggregate_canola_imports(input_df=imports_canola_agg_otros,
+    #                                                         country_name='OTROS')
+
+    # csv_dict = {'imports_canola_agg_all': imports_canola_agg_all,
+    #             'imports_canola_agg_canada': imports_canola_agg_canada,
+    #             'imports_canola_agg_argentina': imports_canola_agg_argentina,
+    #             'imports_canola_agg_otros': imports_canola_agg_otros}
 
     logger.info("Adding missing dates (for reporting)...")
     for k, v in csv_dict.items():
@@ -302,6 +349,14 @@ if not is_init and is_execute_queries:
         pickle.dump(graph_json, graph_json_file)
         graph_json_file.close()
         blob_upload_lst.append(graph_json_file_name)
+
+    logger.info("Saving countries of interest...")
+    countries_json_file_name = 'imports_countries.json'
+    countries_json = dumps(imports_countries)
+    countries_json_file = open('imports_countries.json', "wb")
+    pickle.dump(countries_json, countries_json_file)
+    countries_json_file.close()
+    blob_upload_lst.append(countries_json_file_name)
 
     logger.info("Uploading to Azure Blob Storage...")
     for f in set(blob_upload_lst):

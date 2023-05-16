@@ -351,7 +351,7 @@ ARANC_NAC NOT IN (
 '85369019','85437090','85442000','85444200','87082990','90049080','90160000','90262090','91132000','91139000','92099400','94016910',
 '94054090','95030090','95049000','95069110','95069990','30043212','30043910','22087000', '7129099','21061010','31051090','33059020',
 '33059090','33074990','39232990','39241000','42050000','44149000','48131000','48239099','56031210','72202000','73269000','84339000',
-'85177000','85369019','85442000','87082990','91139000','95030090','95069110'
+'85177000','85369019','85442000','87082990','91139000','95030090','95069110',
 '87082990.0','73269000.0','42050000.0','30043212.0','42023900.0','42022210.0','85183090.0','85442000.0','85182900.0','85068090.0',
 '85369019.0','95049000.0','85437090.0','84224000.0','84199000.0','95069110.0','90049080.0','85444200.0','85177000.0','62045900.0',
 '33051010.0','91139000.0','44219990.0','61124100.0','49070090.0','33059020.0','56075090.0','90160000.0','95030090.0','62082100.0',
@@ -417,7 +417,7 @@ WITH i AS (
 		WHEN MONEDA = 142 THEN 'eur'
 		WHEN MONEDA = 200 THEN 'clp'
 		ELSE 'other' END
-	FROM [tolveet-test].[canola].[vw_imports_canola_trigo] 
+	FROM [canola].[vw_imports_canola_trigo] 
 	WHERE TIPO = 'canola' 
 	AND VIA_TRAN IN (7,1) 
 	AND TIPO2 != 'aceite' 
@@ -431,7 +431,7 @@ WITH i AS (
 ),
 cc1 AS (
 	SELECT *, DATEADD(day, 1, EOMONTH(currency_date, -1)) AS currency_month
-	FROM [tolveet-test].[canola].[currency_converter]
+	FROM [canola].[currency_converter]
 ),
 cc2 AS (
 	SELECT 
@@ -482,7 +482,7 @@ WITH e AS (
 		WHEN MONEDA = 142 THEN 'eur'
 		WHEN MONEDA = 200 THEN 'clp'
 		ELSE 'other' END
-	FROM [tolveet-test].[canola].[vw_exports_canola_trigo] 
+	FROM [canola].[vw_exports_canola_trigo] 
 	WHERE TIPO = 'canola' 
 	AND TIPO2 != 'aceite' 
 	AND VIATRANSPORTE IN (7,1) 
@@ -491,7 +491,7 @@ WITH e AS (
 ),
 cc1 AS (
 	SELECT *, DATEADD(day, 1, EOMONTH(currency_date, -1)) AS currency_month
-	FROM [tolveet-test].[canola].[currency_converter]
+	FROM [canola].[currency_converter]
 ),
 cc2 AS (
 	SELECT 
