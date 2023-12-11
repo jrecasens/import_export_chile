@@ -1,4 +1,5 @@
 azure-storage-file-share
+azure.storage.blob
 flask
 flask-wtf
 flask_mail
@@ -6,3 +7,8 @@ python-dotenv
 wtforms
 email-validator
 gunicorn
+tzlocal
+sqlalchemy
+pyodbc
+xlrd
+openpyxl

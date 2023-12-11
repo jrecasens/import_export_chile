@@ -209,14 +209,22 @@ def get_currency(currency_files):
         logger.info("Forecast of 30 days generated.")
         date_to = date_from + timedelta(days=30)
 
+    currency_df.dropna(how='all', inplace=True)
+
+    currency_df_forecast = pd.DataFrame()
     for f in Config.CURRENCIES:
-        currency_forecast = pd.DataFrame({
+        # f = 'usd'
+        tmp_forecast = pd.DataFrame({
             'currency_code': f,
             'currency_date': pd.date_range(date_from, date_to, freq='D'),
             'to_clp': float('nan')},
             columns=["currency_code", "currency_date", "to_clp"]
         )
-        currency_df = pd.concat([currency_df, currency_forecast], ignore_index=True, sort=False)
+        currency_df_forecast = pd.concat([currency_df_forecast, tmp_forecast])
+
+    # make same data type for concat
+    currency_df_forecast = currency_df_forecast.astype(currency_df.dtypes.to_dict())
+    currency_df = pd.concat([currency_df, currency_df_forecast], ignore_index=True, sort=False)
 
     #forward fill
     currency_df = currency_df.sort_values(by=['currency_date'], ascending=True)
@@ -327,18 +335,24 @@ def copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, curren
         logger.info("Copying imports to DB....")
         conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=imports, table_name=imports.name, path_to_csv=temp_folder)
         logger.info("Copy imports to DB complete. ")
+        is_loaded_imports = True
     else:
         logger.warning("No imports to load to DB. ")
+        is_loaded_imports = False
 
     if len(exports) != 0:
         logger.info("Copying exports to DB....")
         conn.copy_from_file(logger=logger, log_prefix='', conn=conn, schema_name=schema_name, df=exports, table_name=exports.name, path_to_csv=temp_folder)
         logger.info("Copy exports to DB complete. ")
+        is_loaded_exports = True
     else:
         logger.warning("No exports to load to DB. ")
+        is_loaded_exports = False
 
     if is_remove_tmp:
         shutil.rmtree(temp_folder)
+
+    return is_loaded_imports, is_loaded_exports
 
 def check_for_incomplete_periods(incremental_loads, trade_type, schema_name, conn, raw_connection):
     # Select years and months with a missmatch (in number of records) compared to what has been loaded.

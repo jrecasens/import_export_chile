@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 def aggregate_canola_imports(input_df, country_name='TODOS'):
     input_df = input_df.fillna(0)
     # Aggregate all countries and compute weighted average
-    g = input_df.groupby(['fecha_month'], axis=0, as_index=False)
+    g = input_df.groupby(['fecha_month'], as_index=False)
     df = g.apply(lambda x: pd.Series([np.sum(x['cantidad_quintal']),
                                                           np.average(x['precio_fob_usd_quintal'], weights=x['cantidad_quintal']),
                                                           np.average(x['precio_fob_cad_quintal'], weights=x['cantidad_quintal']),
@@ -52,6 +52,10 @@ def generate_missing_dates(df, date_from, date_to):
         months_to_delete = df[a_list].fecha_month.unique()
         missing_lst = ~missing_dates_df['fecha_month'].isin(months_to_delete)
         missing_dates_df = missing_dates_df[missing_lst]
+
+        missing_dates_df = missing_dates_df.astype(df.dtypes.to_dict())
+
+
         df = pd.concat([df, missing_dates_df], ignore_index=True, sort=False)
 
     df['fecha_month'] = pd.to_datetime(

@@ -21,28 +21,36 @@ import pytz
 import ast
 import numpy as np
 
-def sqlalchemy_db_uri(datacreds):
+def sqlalchemy_db_uri(datacreds, dbms='sql_server'):
     """Create SQL Alchemy connection string"""
-    conn_str = pyodbc_db_uri(datacreds)
-    conn_str = 'mssql+pyodbc:///?odbc_connect={}'.format(parse.quote_plus(conn_str))
+
+    if dbms == 'sql_server':
+        conn_str = pyodbc_db_uri(datacreds)
+        conn_str = 'mssql+pyodbc:///?odbc_connect={}'.format(parse.quote_plus(conn_str))
+    elif dbms == 'sqlite':
+        conn_str = 'sqlite:///{}'.format(datacreds)
+
     return conn_str
 
-def pyodbc_db_uri(datacreds):
+def pyodbc_db_uri(datacreds, dbms='sql_server'):
     """Create pyodbc connection string"""
-    AZURE_SQL_DRIVER = datacreds["database"]["AZURE_SQL_DRIVER"]
-    AZURE_SQL_SERVER = datacreds["database"]["AZURE_SQL_SERVER"]
-    AZURE_SQL_DB_NAME = datacreds["database"]["AZURE_SQL_DB_NAME"]
-    AZURE_SQL_DB_USER = datacreds["database"]["AZURE_SQL_DB_USER"]
-    AZURE_SQL_DB_PWD = datacreds["database"]["AZURE_SQL_DB_PWD"]
-    conn_str = ("Driver="+AZURE_SQL_DRIVER+";"
-                "Server="+AZURE_SQL_SERVER+";"
-                "Database="+AZURE_SQL_DB_NAME+";"
-                "UID="+ AZURE_SQL_DB_USER+";"
-                "PWD="+AZURE_SQL_DB_PWD+";"        
-                "TrustServerCertificate=yes;"
-                "Encrypt=yes;"
-                "Connection Timeout=30;"
-                )
+
+    if dbms == 'sql_server':
+        AZURE_SQL_DRIVER = datacreds["database"]["AZURE_SQL_DRIVER"]
+        AZURE_SQL_SERVER = datacreds["database"]["AZURE_SQL_SERVER"]
+        AZURE_SQL_DB_NAME = datacreds["database"]["AZURE_SQL_DB_NAME"]
+        AZURE_SQL_DB_USER = datacreds["database"]["AZURE_SQL_DB_USER"]
+        AZURE_SQL_DB_PWD = datacreds["database"]["AZURE_SQL_DB_PWD"]
+        conn_str = ("Driver="+AZURE_SQL_DRIVER+";"
+                    "Server="+AZURE_SQL_SERVER+";"
+                    "Database="+AZURE_SQL_DB_NAME+";"
+                    "UID="+ AZURE_SQL_DB_USER+";"
+                    "PWD="+AZURE_SQL_DB_PWD+";"        
+                    "TrustServerCertificate=yes;"
+                    "Encrypt=yes;"
+                    "Connection Timeout=30;"
+                    )
+
     return conn_str
 
 def timezone_conversion(logger, log_prefix, dt_obj, tz_origin, tz_destination, verbose=True):
@@ -165,9 +173,13 @@ def _create_database_engine(conn_str):
     """Create a sqlalchemy database engine """
     if config.Config.SQLALCHEMY_ECHO is None:
         config.Config.SQLALCHEMY_ECHO = False
-    engine = db.create_engine(url=conn_str,
-                              fast_executemany=config.Config.FAST_EXECUTEMANY,
-                              echo=config.Config.SQLALCHEMY_ECHO)
+    if 'sqlite' in conn_str:
+        engine = db.create_engine(url=conn_str,
+                                  echo=config.Config.SQLALCHEMY_ECHO)
+    else:
+        engine = db.create_engine(url=conn_str,
+                                  fast_executemany=config.Config.FAST_EXECUTEMANY,
+                                  echo=config.Config.SQLALCHEMY_ECHO)
     return engine
 
 class SqlServerConnector:
@@ -705,7 +717,10 @@ class SqlServerConnector:
                    ):
         """ Read table named table_name.
             Reads DB as UTC by default but converts to Backend TZ """
-        query = f'SELECT {columns} FROM {schema}.{table_name} '
+        if self.engine.name == 'sqlite':
+            query = f'SELECT {columns} FROM {table_name} '
+        else:
+            query = f'SELECT {columns} FROM {schema}.{table_name} '
         if add_top is not None:
             query = re.sub(r'(SELECT)', r'\1 TOP(' + str(add_top) + ')', query)
         if add_conditions is not None:
@@ -713,8 +728,10 @@ class SqlServerConnector:
         if add_order_by is not None:
             query = query + ' ' + add_order_by
         query = query + ';'
+
         with self.engine.connect() as con:
             df = pd.read_sql(sql=text(query), con=con)
+
         # Transform all date columns to backend TZ.
         meta = self.get_schema_metadata(table_name=table_name)
         if to_tz is None:
@@ -737,6 +754,8 @@ class SqlServerConnector:
 
     def write_table_from_dataframe(self, df, table_name, schema='dbo', if_exists='append', extra_prefix='', method='multi'):
         """Write dataframe df to table table_name"""
+        if self.engine.name == 'sqlite':
+            schema = None
         log_prefix = extra_prefix + self.log_prefix
         try:
             self.logger.info(log_prefix + f'Writing {table_name} table...')
@@ -752,7 +771,7 @@ class SqlServerConnector:
             self.logger.warning(log_prefix + "Could not write dataframe. Exception:" + str(e))
             return False
 
-    def _write_table(self, data, table, schema, if_exists='append', chunksize=100000, extra_prefix='', method='multi'):
+    def _write_table(self, data, table, schema=None, if_exists='append', chunksize=100000, extra_prefix='', method='multi'):
         log_prefix = extra_prefix + self.log_prefix
         try:
             if if_exists == "truncate":
@@ -772,22 +791,27 @@ class SqlServerConnector:
             self.logger.warning(log_prefix + "Could not write dataframe. Exception:" + str(e))
             return False
 
-    def _truncate_table(self, table, schema):
+    def _truncate_table(self, table, schema='dbo'):
+
+        if self.engine.name == 'sqlite':
+            table_sql = f'{table};'
+        else:
+            table_sql = f'{schema}.{table};'
         try:
-            query = f'TRUNCATE TABLE {schema}.{table};'
+            query = f'TRUNCATE TABLE ' + table_sql
             self._execute_command(query)
         except Exception as e:
-            self.logger.warning(self.log_prefix + "Could not TRUNCATE table " + table)
+            self.logger.warning(self.log_prefix + "Could not TRUNCATE table " + table + ". Exception:" + str(e))
             try:
                 self.logger.info(self.log_prefix + "Trying DELETE FROM " + table + " instead...")
-                query = f'DELETE FROM {schema}.{table};'
+                query = f'DELETE FROM ' + table_sql
                 self._execute_command(query)
                 self.logger.info(self.log_prefix + "DELETE was successful.")
             except Exception as e:
                 self.logger.warning(
                     self.log_prefix + "Could not DELETE records from table " + table + ". Exception:" + str(e))
 
-    def _clear_table(self, table, schema, add_conditions=None):
+    def _clear_table(self, table, schema='dbo', add_conditions=None):
         query = f'DELETE FROM {schema}.{table} '
         if add_conditions is not None:
             query = query + ' ' + add_conditions

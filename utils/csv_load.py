@@ -139,25 +139,23 @@ def set_headers(imports, exports, import_headers, export_headers):
 def get_years_month_to_load(trade_data):
     dfs = []
 
+    logger.info("Getting Months to load...")
+
     for trade_table in trade_data:
 
+        logger.info("Transforming columns to string and removing spaces...")
         name = trade_table.name
+        temp = trade_table.columns.astype(str)
+        trade_table.columns = temp.str.replace(' ', '')
 
-        trade_table.columns = trade_table.columns.str.replace(' ', '')
-
-        # Subset columns. Only extract what is needed.
-
+        logger.info("Extracting subset of columns (Only extract what is needed: trade_type and period_id")
         if len(trade_table) > 0:
             df = trade_table[['period_id']].copy()
-
             df['trade_type'] = name
-
             df_g = df.groupby(['trade_type', 'period_id']).agg(
                 num_records=pd.NamedAgg(column='period_id', aggfunc=pd.Series.count)
             ).reset_index()
-
             df_g["num_records"] = df_g["num_records"].astype("Int64")
-
             try:
                 dfs.append(df_g)
             except Exception as e:

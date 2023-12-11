@@ -35,17 +35,28 @@ logger = TL.get_tolveet_logger()
 # Import and Export Data
 # https://datos.gob.cl/dataset/registro-de-importacion-2021
 # https://datos.gob.cl/dataset/registro-de-exportacion-2021
+# (move to: F:\GitHub\import_export_chile\data\chile_trade\imports_exports)
 
 # Codigos Monedas, paises, puertos, etc.
 # http://comext.aduana.cl:7001/codigos/
+# (move to: F:\GitHub\import_export_chile\data\chile_trade\dimensions)
 
 # Currency Exchange rates
 # URL: https://si3.bcentral.cl/Indicadoressiete/secure/IndicadoresDiarios.aspx
 # Instructions:
 # - For each currency click on "Tipos de cambio" -> Ver Serie (Dólar observado , Euro y Otros tipos de cambio nominal)
 # - Download Excel from Indicadores diarios (Inicio / Estadísticas / Indicadores diarios)
+# (move to: F:\GitHub\import_export_chile\data\chile_trade\dimensions)
+
 
 ### ///// Instructions
+
+
+# / FIRST TIME:
+
+# Set  in this script:
+# 'is_init = True'
+
 # Create empty DB.
 # CREATE LOGIN XXX
 #     WITH PASSWORD = 'YYY';
@@ -56,6 +67,14 @@ logger = TL.get_tolveet_logger()
 # Create schema "canola"
 
 # add windows access to folder (NT SERVICE\MSSQLSERVER)
+
+# / RECURRENT:
+
+# Set  in this script:
+# 'is_init = False'
+
+# Load new files in github folder and run this script.
+
 
 
 ### ///// PARAMETERS
@@ -195,7 +214,7 @@ if not is_init:
 
     project_folder, columns_folder, dimensions_folder, currency_folder, trade_folder, temp_folder = get_folders(Config.TEMP_FOLDER)
 
-    copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter, dimensions_dict, is_remove_tmp=is_remove_tmp)
+    is_loaded_imports, is_loaded_exports = copy_csv_into_db(conn, raw_connection, imports, exports, schema_name, currency_converter, dimensions_dict, is_remove_tmp=is_remove_tmp)
     end_data_load = time.time() - start_data_load
 
 if not is_init and is_execute_queries:
@@ -204,12 +223,14 @@ if not is_init and is_execute_queries:
     logger.info("////////////////////////////////////////")
 
     start_sql_report_queries = time.time()
-    logger.info("Running SQL Reporting queries...")
-    conn.execute_sql_batch(logger=logger,
-                           log_prefix='',
-                           raw_connection=raw_connection,
-                           query_parsed=sql_report_commands,
-                           debug=True)
+
+    if is_loaded_imports or is_loaded_exports:
+        logger.info("Running SQL Reporting queries...")
+        conn.execute_sql_batch(logger=logger,
+                               log_prefix='',
+                               raw_connection=raw_connection,
+                               query_parsed=sql_report_commands,
+                               debug=True)
 
     logger.info("/////////////////////////////////////////")
     logger.info("//// REPORTS AND PLOTS GENERATION /////////")
@@ -225,6 +246,7 @@ if not is_init and is_execute_queries:
                     'vw_exports_canola_trigo'
     ]
     for t in views_to_zip:
+        # t = 'vw_imports_canola_trigo'
         logger.info("Reading SQL view "+t+" for extraction...")
         vw_df = conn.read_table(table_name=t, schema=schema_name)
         logger.info("Saving "+t+" to Excel...")
@@ -269,14 +291,13 @@ if not is_init and is_execute_queries:
         0)
 
     imports_canola_agg = vw_imports_canola_report.groupby(by=['fecha_month', 'pais_nombre_origen'],
-                                                          axis=0,
                                                           as_index=False,
                                                           group_keys=False).agg(
-        cantidad_quintal=pd.NamedAgg(column='CANT_MERC_MOD', aggfunc=sum),
-        precio_fob_usd_quintal=pd.NamedAgg(column='precio_fob_usd', aggfunc=np.mean),
-        precio_fob_cad_quintal=pd.NamedAgg(column='precio_fob_cad', aggfunc=np.mean),
-        precio_cif_usd_quintal=pd.NamedAgg(column='precio_cif_usd', aggfunc=np.mean),
-        precio_cif_cad_quintal=pd.NamedAgg(column='precio_cif_cad', aggfunc=np.mean)
+        cantidad_quintal=pd.NamedAgg(column='CANT_MERC_MOD', aggfunc='sum'),
+        precio_fob_usd_quintal=pd.NamedAgg(column='precio_fob_usd', aggfunc='mean'),
+        precio_fob_cad_quintal=pd.NamedAgg(column='precio_fob_cad', aggfunc='mean'),
+        precio_cif_usd_quintal=pd.NamedAgg(column='precio_cif_usd', aggfunc='mean'),
+        precio_cif_cad_quintal=pd.NamedAgg(column='precio_cif_cad', aggfunc='mean')
     )
 
 
