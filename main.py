@@ -32,16 +32,17 @@ logger = TL.get_tolveet_logger()
 
 ### ///// URLs
 
-# Import and Export Data
+# Import and Export Data (files analyzed each time this script is run).
 # https://datos.gob.cl/dataset/registro-de-importacion-2021
 # https://datos.gob.cl/dataset/registro-de-exportacion-2021
 # (move to: F:\GitHub\import_export_chile\data\chile_trade\imports_exports)
 
-# Codigos Monedas, paises, puertos, etc.
+# Codigos Monedas, paises, puertos, etc. (loaded each time this script is run).
 # http://comext.aduana.cl:7001/codigos/
 # (move to: F:\GitHub\import_export_chile\data\chile_trade\dimensions)
+# (back uo files)
 
-# Currency Exchange rates
+# Currency Exchange rates (loaded each time this script is run).
 # URL: https://si3.bcentral.cl/Indicadoressiete/secure/IndicadoresDiarios.aspx
 # Instructions:
 # - For each currency click on "Tipos de cambio" -> Ver Serie (Dólar observado , Euro y Otros tipos de cambio nominal)
@@ -49,10 +50,20 @@ logger = TL.get_tolveet_logger()
 # (move to: F:\GitHub\import_export_chile\data\chile_trade\dimensions)
 
 
-### ///// Instructions
+######### ///// Instructions /////
 
+# This script requires a LOCAL database in place in SQL Server and azure storage. See .env file:
 
-# / FIRST TIME:
+# AZURE_SQL_SERVER= <XXXX>
+# AZURE_SQL_DB_NAME= <XXXX>
+# AZURE_SQL_DB_USER= <XXXX>
+# AZURE_SQL_DB_PWD= <XXXX>
+# AZURE_SQL_DRIVER= <XXXX>
+# AZURE_STORAGE_CONNECT_STR=<XXXX>
+
+# Load new files in github folder and run this script.
+
+# //////// FIRST TIME RUNNING THIS SCRIPT:
 
 # Set  in this script:
 # 'is_init = True'
@@ -66,14 +77,15 @@ logger = TL.get_tolveet_logger()
 
 # Create schema "canola"
 
-# add windows access to folder (NT SERVICE\MSSQLSERVER)
+# add windows access to folder (User: NT SERVICE\MSSQLSERVER)
 
-# / RECURRENT:
+# //////// RECURRENT:
 
 # Set  in this script:
 # 'is_init = False'
 
-# Load new files in github folder and run this script.
+# All dimensions, column names and exchange are reloaded on every run. Truncate in place to replace data.
+# In a recurrent run, only the last year is actually processed.
 
 
 
